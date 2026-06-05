@@ -16,6 +16,184 @@ Correcciones de estabilidad y conectividad sobre el commit inicial:
 - **SMS:** solo se envía si el módem GSM está registrado en red; si el dispositivo opera solo por Wi-Fi, se omite con un log de advertencia.
 - **Copia segura de strings:** `safeStrCopy()` garantiza terminador nulo en la configuración guardada desde el portal web y al cargar desde NVS.
 
+## Carga del firmware en ESP32-S3 SuperMini
+
+### Requisitos
+
+- [Arduino IDE 2](https://www.arduino.cc/en/software) o [arduino-cli](https://arduino.github.io/arduino-cli/)
+- Paquete de placas **esp32** de Espressif Systems (v3.x recomendado)
+- [esptool](https://docs.espressif.com/projects/esptool/) (`pip install esptool`)
+- Cable USB-C de datos
+
+**Librerías Arduino** (instalar desde el Gestor de librerías):
+
+| Librería | Uso |
+|----------|-----|
+| [PubSubClient](https://github.com/knolleary/pubsubclient) | Cliente MQTT |
+| [TinyGSM](https://github.com/vshymanskyy/TinyGSM) | Módem SIM800L |
+
+### Configuración de la placa (Arduino IDE)
+
+En **Herramientas**, seleccionar:
+
+| Opción | Valor |
+|--------|-------|
+| Placa | `ESP32S3 Dev Module` |
+| USB CDC On Boot | `Enabled` |
+| CPU Frequency | `240 MHz` |
+| Flash Size | `4MB (32Mb)` |
+| Flash Mode | `QIO 80MHz` |
+| Partition Scheme | `Default 4MB with spiffs` |
+| PSRAM | `Disabled` |
+| Upload Speed | `921600` |
+| Puerto | El puerto USB de la SuperMini (ver abajo) |
+
+> La ESP32-S3 SuperMini no aparece como placa propia en el paquete esp32; se usa **ESP32S3 Dev Module** con los parámetros anteriores.
+
+**URL del gestor de placas** (Archivo → Preferencias → URLs adicionales):
+
+```
+https://espressif.github.io/arduino-esp32/package_esp32_index.json
+```
+
+### Identificar el puerto serie
+
+**macOS / Linux:**
+
+```bash
+ls /dev/cu.usb* /dev/tty.usb* 2>/dev/null
+# Ejemplo: /dev/cu.usbmodem101
+```
+
+**Windows:** `COM3`, `COM4`, etc. en el Administrador de dispositivos.
+
+Conectar la placa por USB-C. Si no aparece ningún puerto, mantener pulsado **BOOT**, pulsar y soltar **RESET**, y soltar **BOOT** (modo descarga).
+
+### Compilar el firmware
+
+Colocar todos los archivos del proyecto en una carpeta llamada `PhaseWatchS3` con `PhaseWatchS3.ino` en la raíz.
+
+**Arduino IDE:** Verificar (✓). Los binarios quedan en una carpeta temporal; para obtener la ruta exacta, activar en Preferencias:
+
+> *Mostrar salida detallada durante: subida*
+
+**arduino-cli:**
+
+```bash
+arduino-cli core update-index
+arduino-cli core install esp32:esp32
+
+arduino-cli lib install "PubSubClient" "TinyGSM"
+
+arduino-cli compile \
+  --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,FlashMode=qio,PartitionScheme=default \
+  --output-dir build \
+  PhaseWatchS3/
+```
+
+Tras compilar, en `build/` deberían generarse:
+
+| Archivo | Descripción |
+|---------|-------------|
+| `PhaseWatchS3.ino.bootloader.bin` | Bootloader |
+| `PhaseWatchS3.ino.partitions.bin` | Tabla de particiones |
+| `PhaseWatchS3.ino.bin` | Firmware de la aplicación |
+
+El archivo `boot_app0.bin` viene con el paquete esp32 (no se genera al compilar el sketch):
+
+```bash
+# macOS — ajustar la versión del paquete si es distinta
+ls ~/Library/Arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin
+```
+
+### Subir con esptool
+
+Reemplazar `PORT` por el puerto detectado y las rutas según dónde se compilaron los binarios.
+
+```bash
+python -m esptool \
+  --chip esp32s3 \
+  --port PORT \
+  --baud 921600 \
+  --before default_reset \
+  --after hard_reset \
+  write_flash \
+  --flash_mode qio \
+  --flash_freq 80m \
+  --flash_size 4MB \
+  0x0    build/PhaseWatchS3.ino.bootloader.bin \
+  0x8000 build/PhaseWatchS3.ino.partitions.bin \
+  0xe000 ~/Library/Arduino15/packages/esp32/hardware/esp32/3.0.7/tools/partitions/boot_app0.bin \
+  0x10000 build/PhaseWatchS3.ino.bin
+```
+
+**Ejemplo en macOS** (puerto y versión del paquete esp32 reales):
+
+```bash
+python -m esptool \
+  --chip esp32s3 \
+  --port /dev/cu.usbmodem101 \
+  --baud 921600 \
+  --before default_reset \
+  --after hard_reset \
+  write_flash \
+  --flash_mode qio \
+  --flash_freq 80m \
+  --flash_size 4MB \
+  0x0    build/PhaseWatchS3.ino.bootloader.bin \
+  0x8000 build/PhaseWatchS3.ino.partitions.bin \
+  0xe000 ~/Library/Arduino15/packages/esp32/hardware/esp32/3.0.7/tools/partitions/boot_app0.bin \
+  0x10000 build/PhaseWatchS3.ino.bin
+```
+
+Salida esperada al finalizar:
+
+```
+Hash of data verified.
+Leaving...
+Hard resetting via RTS pin...
+```
+
+#### Obtener el comando exacto desde Arduino IDE
+
+Si la compilación manual falla por rutas u offsets, subir una vez desde el IDE con la salida detallada activada. En la consola aparecerá la línea completa de `esptool` con todos los paths y direcciones correctos para tu entorno. Copiarla y reutilizarla para flasheos posteriores sin abrir el IDE.
+
+#### Borrar flash completa (opcional)
+
+Útil si la placa quedó en un estado inconsistente o al flashear por primera vez:
+
+```bash
+python -m esptool --chip esp32s3 --port PORT erase_flash
+```
+
+Luego ejecutar de nuevo el comando `write_flash`.
+
+### Monitor serial
+
+Con **USB CDC On Boot** habilitado, el puerto de carga es también el de depuración (115200 baud):
+
+```bash
+# arduino-cli
+arduino-cli monitor -p /dev/cu.usbmodem101 -c baudrate=115200
+
+# o con screen (macOS/Linux)
+screen /dev/cu.usbmodem101 115200
+```
+
+Al arrancar debería verse:
+
+```
+[INFO]: Booting PhaseWatch S3...
+```
+
+### Primera configuración
+
+Si el dispositivo no tiene configuración guardada en NVS, arranca en modo Access Point:
+
+- **SSID:** `PhaseWatch_Config`
+- **Contraseña:** `12345678`
+- Conectarse y abrir `http://192.168.4.1` para cargar Wi-Fi, MQTT y teléfonos SMS.
+
 ## Esquema de Conexiones
 
 ### Entradas de Fase (Aisladas)
