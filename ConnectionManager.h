@@ -13,8 +13,19 @@ public:
     
     static NetworkMode getCurrentNetwork();
     static bool isConnected();
+    static bool isMqttConnected();
+    static bool isGsmDetected();
+    static bool isGsmRegistered();
     static int getRSSI();
-    
+    static int getGsmSignal();
+
+    static String getDeviceId();
+    static String getMqttTopicBase();
+    static String getMqttTopicStatus();
+    static String getMqttTopicEvents();
+    static String getMqttTopicLwt();
+    static bool getBatteryStatus(int16_t& milliVolts, int8_t& percent);
+
     static void publishEvent(const char* eventType, const char* message);
     static void sendTestNotification();
 
@@ -34,7 +45,11 @@ private:
     static unsigned long lastReconnectAttempt;
     static unsigned long wifiConnectStartTime;
     static bool wifiConnectPending;
-    
-    static String getMacAddress();
+    static bool gsmModemReady;
+    static unsigned long lastGsmProbe;
+    static unsigned long lastBattRead;
+    static int16_t cachedBattMv;
+    static int8_t cachedBattPct;
+
     static String generateJsonPayload(const char* msgType, const char* event, const char* message);
 };

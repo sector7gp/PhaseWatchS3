@@ -1,4 +1,5 @@
 #include "WebPortal.h"
+#include "WebPortalHTML.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -13,24 +14,62 @@ DNSServer dnsServer;
 bool WebPortal::apMode = false;
 const byte DNS_PORT = 53;
 
+String WebPortal::jsonEscape(const String& input) {
+    String out;
+    out.reserve(input.length() + 8);
+    for (size_t i = 0; i < input.length(); i++) {
+        char c = input.charAt(i);
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else out += c;
+    }
+    return out;
+}
+
+String WebPortal::criticalityLabel(PhaseCriticality c) {
+    if (c == CRIT_NORMAL) return "NORMAL";
+    if (c == CRIT_PARTIAL_FAIL) return "PARTIAL_FAIL";
+    return "TOTAL_FAIL";
+}
+
 void WebPortal::init() {
     if (!StorageManager::config.configured) {
         apMode = true;
         Logger::info("Starting in AP Mode...");
+
         WiFi.mode(WIFI_AP);
-        WiFi.softAP("PhaseWatch_Config", "12345678"); // Default AP pass
-        
+        WiFi.softAPConfig(
+            IPAddress(192, 168, 4, 1),
+            IPAddress(192, 168, 4, 1),
+            IPAddress(255, 255, 255, 0)
+        );
+
+        bool apStarted = WiFi.softAP("PhaseWatch_Config", "12345678", 1, 0, 4);
+        if (apStarted) {
+            Logger::info(("AP ready — SSID: PhaseWatch_Config | IP: " + WiFi.softAPIP().toString()).c_str());
+        } else {
+            Logger::error("Failed to start configuration AP.");
+        }
+
         dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
     } else {
         apMode = false;
         Logger::info("Starting in Station Mode Web Server...");
-        // WiFi is already started by ConnectionManager
     }
 
     server.on("/", handleRoot);
+    server.on("/api/status", HTTP_GET, handleApiStatus);
+    server.on("/api/logs", HTTP_GET, handleApiLogs);
+    server.on("/api/config", HTTP_GET, handleApiConfig);
+    server.on("/api/save", HTTP_POST, handleSaveConfig);
+    server.on("/api/test", HTTP_POST, handleTest);
+    server.on("/api/reset", HTTP_POST, handleFactoryReset);
     server.on("/save", HTTP_POST, handleSaveConfig);
     server.on("/test", HTTP_POST, handleTest);
-    server.on("/logs", handleLogs);
+    server.on("/reset", HTTP_POST, handleFactoryReset);
     server.onNotFound(handleNotFound);
 
     server.begin();
@@ -49,89 +88,123 @@ bool WebPortal::isAPMode() {
 }
 
 void WebPortal::handleRoot() {
-    String html = "<html><head><title>PhaseWatch S3</title>";
-    html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-    html += "<style>body{font-family:sans-serif; margin:20px;} input, button{display:block; margin-bottom:10px; width:100%; padding:10px; box-sizing:border-box;}</style>";
-    html += "</head><body>";
-    
-    html += "<h1>PhaseWatch S3</h1>";
-    
-    if (apMode) {
-        html += "<h2>Configuracion</h2>";
-        html += "<form action='/save' method='POST'>";
-        html += "<label>WiFi SSID:</label><input type='text' name='wifiSSID' value='" + String(StorageManager::config.wifiSSID) + "'>";
-        html += "<label>WiFi Password:</label><input type='password' name='wifiPass'>";
-        
-        html += "<label>MQTT Host:</label><input type='text' name='mqttHost' value='" + String(StorageManager::config.mqttHost) + "'>";
-        html += "<label>MQTT Port:</label><input type='number' name='mqttPort' value='" + String(StorageManager::config.mqttPort) + "'>";
-        html += "<label>MQTT User:</label><input type='text' name='mqttUser' value='" + String(StorageManager::config.mqttUser) + "'>";
-        html += "<label>MQTT Pass:</label><input type='password' name='mqttPass'>";
-        
-        html += "<label>Telefono 1 (SMS):</label><input type='text' name='phone0' value='" + String(StorageManager::config.phones[0]) + "'>";
-        html += "<label>Telefono 2 (SMS):</label><input type='text' name='phone1' value='" + String(StorageManager::config.phones[1]) + "'>";
-        html += "<label>Telefono 3 (SMS):</label><input type='text' name='phone2' value='" + String(StorageManager::config.phones[2]) + "'>";
-        
-        html += "<button type='submit'>Guardar y Reiniciar</button>";
-        html += "</form>";
-    } else {
-        html += "<h2>Dashboard Local</h2>";
-        
-        html += "<p><b>Fase L1:</b> <span style='color:" + String(PhaseMonitor::l1_ok ? "green" : "red") + "'>" + String(PhaseMonitor::l1_ok ? "OK" : "FALLA") + "</span></p>";
-        html += "<p><b>Fase L2:</b> <span style='color:" + String(PhaseMonitor::l2_ok ? "green" : "red") + "'>" + String(PhaseMonitor::l2_ok ? "OK" : "FALLA") + "</span></p>";
-        html += "<p><b>Fase L3:</b> <span style='color:" + String(PhaseMonitor::l3_ok ? "green" : "red") + "'>" + String(PhaseMonitor::l3_ok ? "OK" : "FALLA") + "</span></p>";
-        
-        String netStr = "Ninguna";
-        if (ConnectionManager::getCurrentNetwork() == NET_WIFI) netStr = "WiFi";
-        else if (ConnectionManager::getCurrentNetwork() == NET_GSM) netStr = "GSM/GPRS";
-        
-        html += "<p><b>Red Activa:</b> " + netStr + "</p>";
-        html += "<p><b>RSSI (Señal):</b> " + String(ConnectionManager::getRSSI()) + "</p>";
-        
-        html += "<hr>";
-        html += "<form action='/test' method='POST'><button type='submit'>Enviar Notificacion de Prueba</button></form>";
-        html += "<a href='/logs'><button type='button'>Ver Logs de Sistema</button></a>";
-    }
-    
-    html += "</body></html>";
-    server.send(200, "text/html", html);
+    server.send_P(200, "text/html", PORTAL_HTML);
 }
 
-void WebPortal::handleSaveConfig() {
+void WebPortal::handleApiStatus() {
+    PhaseCriticality crit = PhaseMonitor::getCriticality();
+
+    String network = "NONE";
+    if (ConnectionManager::getCurrentNetwork() == NET_WIFI) network = "WIFI";
+    else if (ConnectionManager::getCurrentNetwork() == NET_GSM) network = "GPRS";
+
+    int16_t battMv = -1;
+    int8_t battPct = -1;
+    bool battOk = ConnectionManager::getBatteryStatus(battMv, battPct);
+
+    String json = "{";
+    json += "\"device_id\":\"" + ConnectionManager::getDeviceId() + "\",";
+    json += "\"uptime_s\":" + String(millis() / 1000) + ",";
+    json += "\"config_mode\":" + String(apMode ? "true" : "false") + ",";
+    json += "\"l1\":" + String(PhaseMonitor::l1_ok ? "true" : "false") + ",";
+    json += "\"l2\":" + String(PhaseMonitor::l2_ok ? "true" : "false") + ",";
+    json += "\"l3\":" + String(PhaseMonitor::l3_ok ? "true" : "false") + ",";
+    json += "\"criticality\":\"" + criticalityLabel(crit) + "\",";
+    json += "\"network\":\"" + network + "\",";
+    json += "\"rssi\":" + String(ConnectionManager::getRSSI()) + ",";
+    json += "\"mqtt_connected\":" + String(ConnectionManager::isMqttConnected() ? "true" : "false") + ",";
+    json += "\"gsm_detected\":" + String(ConnectionManager::isGsmDetected() ? "true" : "false") + ",";
+    json += "\"gsm_registered\":" + String(ConnectionManager::isGsmRegistered() ? "true" : "false") + ",";
+    json += "\"gsm_signal\":" + String(ConnectionManager::getGsmSignal()) + ",";
+    json += "\"battery_available\":" + String(battOk ? "true" : "false") + ",";
+    json += "\"battery_mv\":" + String(battMv) + ",";
+    json += "\"battery_pct\":" + String(battPct) + ",";
+    json += "\"mqtt_topics\":{";
+    json += "\"base\":\"" + ConnectionManager::getMqttTopicBase() + "\",";
+    json += "\"status\":\"" + ConnectionManager::getMqttTopicStatus() + "\",";
+    json += "\"events\":\"" + ConnectionManager::getMqttTopicEvents() + "\",";
+    json += "\"lwt\":\"" + ConnectionManager::getMqttTopicLwt() + "\"";
+    json += "}}";
+
+    server.send(200, "application/json", json);
+}
+
+void WebPortal::handleApiLogs() {
+    String json = "{\"logs\":\"" + jsonEscape(Logger::getLogs()) + "\"}";
+    server.send(200, "application/json", json);
+}
+
+void WebPortal::handleApiConfig() {
+    String json = "{";
+    json += "\"wifiSSID\":\"" + jsonEscape(String(StorageManager::config.wifiSSID)) + "\",";
+    json += "\"mqttHost\":\"" + jsonEscape(String(StorageManager::config.mqttHost)) + "\",";
+    json += "\"mqttPort\":" + String(StorageManager::config.mqttPort) + ",";
+    json += "\"mqttUser\":\"" + jsonEscape(String(StorageManager::config.mqttUser)) + "\",";
+    json += "\"phones\":[";
+    for (int i = 0; i < MAX_PHONE_NUMBERS; i++) {
+        if (i > 0) json += ",";
+        json += "\"" + jsonEscape(String(StorageManager::config.phones[i])) + "\"";
+    }
+    json += "]}";
+
+    server.send(200, "application/json", json);
+}
+
+void WebPortal::applyConfigFromRequest() {
     if (server.hasArg("wifiSSID")) safeStrCopy(StorageManager::config.wifiSSID, MAX_SSID_LEN, server.arg("wifiSSID").c_str());
-    if (server.hasArg("wifiPass") && server.arg("wifiPass").length() > 0) safeStrCopy(StorageManager::config.wifiPass, MAX_PASS_LEN, server.arg("wifiPass").c_str());
-    
+    if (server.hasArg("wifiPass") && server.arg("wifiPass").length() > 0) {
+        safeStrCopy(StorageManager::config.wifiPass, MAX_PASS_LEN, server.arg("wifiPass").c_str());
+    }
+
     if (server.hasArg("mqttHost")) safeStrCopy(StorageManager::config.mqttHost, MAX_MQTT_HOST_LEN, server.arg("mqttHost").c_str());
     if (server.hasArg("mqttPort")) StorageManager::config.mqttPort = server.arg("mqttPort").toInt();
     if (server.hasArg("mqttUser")) safeStrCopy(StorageManager::config.mqttUser, MAX_MQTT_USER_LEN, server.arg("mqttUser").c_str());
-    if (server.hasArg("mqttPass") && server.arg("mqttPass").length() > 0) safeStrCopy(StorageManager::config.mqttPass, MAX_MQTT_PASS_LEN, server.arg("mqttPass").c_str());
-    
+    if (server.hasArg("mqttPass") && server.arg("mqttPass").length() > 0) {
+        safeStrCopy(StorageManager::config.mqttPass, MAX_MQTT_PASS_LEN, server.arg("mqttPass").c_str());
+    }
+
     if (server.hasArg("phone0")) safeStrCopy(StorageManager::config.phones[0], MAX_PHONE_LEN, server.arg("phone0").c_str());
     if (server.hasArg("phone1")) safeStrCopy(StorageManager::config.phones[1], MAX_PHONE_LEN, server.arg("phone1").c_str());
     if (server.hasArg("phone2")) safeStrCopy(StorageManager::config.phones[2], MAX_PHONE_LEN, server.arg("phone2").c_str());
-    
+}
+
+void WebPortal::prepareRestart() {
+    server.stop();
+    if (apMode) {
+        dnsServer.stop();
+        WiFi.softAPdisconnect(true);
+    }
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+}
+
+void WebPortal::handleSaveConfig() {
+    applyConfigFromRequest();
     StorageManager::save();
-    
-    server.send(200, "text/html", "<html><body><h2>Configuracion Guardada. Reiniciando...</h2></body></html>");
-    delay(2000);
+
+    String body = "{\"ok\":true,\"restarting\":true,\"message\":\"Configuracion guardada. Reiniciando...\"}";
+    server.send(200, "application/json", body);
+    server.client().stop();
+    delay(500);
+    prepareRestart();
     ESP.restart();
 }
 
 void WebPortal::handleTest() {
     ConnectionManager::sendTestNotification();
-    server.sendHeader("Location", "/");
-    server.send(303);
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"Notificacion de prueba enviada\"}");
 }
 
-void WebPortal::handleLogs() {
-    String html = "<html><body><h2>Logs del Sistema</h2><pre>";
-    html += Logger::getLogs();
-    html += "</pre><a href='/'>Volver</a></body></html>";
-    server.send(200, "text/html", html);
+void WebPortal::handleFactoryReset() {
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"Reseteando dispositivo...\"}");
+    server.client().stop();
+    delay(500);
+    prepareRestart();
+    StorageManager::factoryReset();
 }
 
 void WebPortal::handleNotFound() {
     if (apMode) {
-        // Redirect to captive portal root
         server.sendHeader("Location", String("http://") + server.client().localIP().toString(), true);
         server.send(302, "text/plain", "");
     } else {

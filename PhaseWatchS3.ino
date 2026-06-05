@@ -32,8 +32,15 @@ void setup() {
     
     StorageManager::init();
     PhaseMonitor::init();
-    WebPortal::init();
-    ConnectionManager::init();
+
+    // Con config guardada, red primero; sin config, AP del portal primero
+    if (StorageManager::config.configured) {
+        ConnectionManager::init();
+        WebPortal::init();
+    } else {
+        WebPortal::init();
+        ConnectionManager::init();
+    }
     
     // Init Watchdog Timer
     esp_task_wdt_config_t wdt_config = {

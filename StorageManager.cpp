@@ -34,7 +34,9 @@ void StorageManager::load() {
     }
     
     preferences.end();
-    Logger::info("Configuration loaded from NVS");
+    Logger::info(config.configured
+        ? "Configuration loaded from NVS (device configured)."
+        : "No configuration found — AP setup mode will start.");
 }
 
 void StorageManager::save() {

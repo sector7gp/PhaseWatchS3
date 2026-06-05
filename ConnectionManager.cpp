@@ -3,6 +3,7 @@
 #include "PhaseMonitor.h"
 #include "Logger.h"
 #include <esp_task_wdt.h>
+#include <esp_mac.h>
 
 // Hardware Serial for GSM
 HardwareSerial SerialGSM(1);
@@ -19,6 +20,11 @@ unsigned long ConnectionManager::lastHeartbeatTime = 0;
 unsigned long ConnectionManager::lastReconnectAttempt = 0;
 unsigned long ConnectionManager::wifiConnectStartTime = 0;
 bool ConnectionManager::wifiConnectPending = false;
+bool ConnectionManager::gsmModemReady = false;
+unsigned long ConnectionManager::lastGsmProbe = 0;
+unsigned long ConnectionManager::lastBattRead = 0;
+int16_t ConnectionManager::cachedBattMv = -1;
+int8_t ConnectionManager::cachedBattPct = -1;
 String macStr = "";
 
 #define WIFI_CONNECT_TIMEOUT_MS 15000
@@ -30,22 +36,44 @@ void ConnectionManager::disconnectMQTT() {
     }
 }
 
+String ConnectionManager::getDeviceId() {
+    if (macStr.length() > 0) return macStr;
+
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char buf[13];
+    snprintf(buf, sizeof(buf), "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return String(buf);
+}
+
 void ConnectionManager::init() {
-    macStr = WiFi.macAddress();
-    macStr.replace(":", "");
+    if (!StorageManager::config.configured) {
+        Logger::info("Network init skipped (AP configuration mode).");
+        return;
+    }
+
+    macStr = getDeviceId();
     
     SerialGSM.begin(GSM_BAUD_RATE, SERIAL_8N1, PIN_GSM_RX, PIN_GSM_TX);
     Logger::info("Initializing Modem...");
     modem.init();
-    
-    if (StorageManager::config.configured) {
-        connectWiFiBlocking();
+    gsmModemReady = modem.testAT(2000);
+    lastGsmProbe = millis();
+
+    if (gsmModemReady) {
+        Logger::info("GSM modem detected.");
+    } else {
+        Logger::warn("GSM modem not detected.");
     }
+    
+    connectWiFiBlocking();
 }
 
 void ConnectionManager::startWiFiConnection() {
     Logger::info("Connecting to WiFi...");
     disconnectMQTT();
+    WiFi.mode(WIFI_STA);
     WiFi.begin(StorageManager::config.wifiSSID, StorageManager::config.wifiPass);
     wifiConnectPending = true;
     wifiConnectStartTime = millis();
@@ -122,6 +150,11 @@ void ConnectionManager::connectGSM() {
 
 void ConnectionManager::update() {
     if (!StorageManager::config.configured) return;
+
+    if (gsmModemReady && millis() - lastGsmProbe > 30000) {
+        gsmModemReady = modem.testAT(1000);
+        lastGsmProbe = millis();
+    }
     
     maintainConnection();
     maintainMQTT();
@@ -147,6 +180,7 @@ void ConnectionManager::maintainConnection() {
         Logger::info("WiFi restored. Switching back...");
         disconnectMQTT();
         modem.gprsDisconnect();
+        WiFi.mode(WIFI_STA);
         currentNetwork = NET_WIFI;
         mqtt = &mqttWiFi;
         mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
@@ -248,6 +282,62 @@ NetworkMode ConnectionManager::getCurrentNetwork() { return currentNetwork; }
 
 bool ConnectionManager::isConnected() {
     return currentNetwork != NET_NONE && mqtt != nullptr && mqtt->connected();
+}
+
+bool ConnectionManager::isMqttConnected() {
+    return mqtt != nullptr && mqtt->connected();
+}
+
+bool ConnectionManager::isGsmDetected() {
+    return gsmModemReady;
+}
+
+bool ConnectionManager::isGsmRegistered() {
+    return gsmModemReady && modem.isNetworkConnected();
+}
+
+int ConnectionManager::getGsmSignal() {
+    if (!gsmModemReady) return 0;
+    return modem.getSignalQuality();
+}
+
+String ConnectionManager::getMqttTopicBase() {
+    return "phasewatch/" + getDeviceId();
+}
+
+String ConnectionManager::getMqttTopicStatus() {
+    return getMqttTopicBase() + "/status";
+}
+
+String ConnectionManager::getMqttTopicEvents() {
+    return getMqttTopicBase() + "/events";
+}
+
+String ConnectionManager::getMqttTopicLwt() {
+    return getMqttTopicBase() + "/lwt";
+}
+
+bool ConnectionManager::getBatteryStatus(int16_t& milliVolts, int8_t& percent) {
+    milliVolts = cachedBattMv;
+    percent = cachedBattPct;
+
+    if (!gsmModemReady) return false;
+
+    if (millis() - lastBattRead < 60000 && cachedBattMv > 0) {
+        return true;
+    }
+
+    int8_t chargeState = 0;
+    int16_t mv = 0;
+    if (modem.getBattStats(chargeState, percent, mv) && mv > 0) {
+        cachedBattMv = mv;
+        cachedBattPct = percent;
+        lastBattRead = millis();
+        milliVolts = mv;
+        return true;
+    }
+
+    return false;
 }
 
 int ConnectionManager::getRSSI() {

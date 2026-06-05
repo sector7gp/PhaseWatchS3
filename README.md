@@ -1,10 +1,22 @@
 # PhaseWatchS3
 
-**Versión:** v0.1
+**Versión:** v0.2
 
 Sistema de monitoreo de fases (L1, L2, L3) para ESP32-S3 con doble conectividad (Wi-Fi y GPRS), notificaciones MQTT y alertas por SMS.
 
 ## Changelog
+
+### v0.2
+
+Portal web renovado y mejoras de arranque/configuración:
+
+- **SPA moderna** (HTML/CSS/JS en PROGMEM, sin dependencias externas) con pestañas: Dashboard, Configuración y Logs.
+- **Dashboard en vivo:** se actualiza automáticamente cada 2 s al detectar cambios en fases, red, MQTT o GSM.
+- **Estado ampliado:** conexión MQTT, módulo GSM detectado, registro en red, topics MQTT publicados y tensión del SIM800L.
+- **API REST JSON:** `/api/status`, `/api/config`, `/api/logs`, `/api/save`, `/api/test`, `/api/reset`.
+- **Modo AP mejorado:** IP fija `192.168.4.1`, logs claros en serial, cierre limpio de WiFi antes de reiniciar.
+- **Fix crash al guardar config:** reinicio seguro del AP y orden de inicialización corregido (red antes del portal cuando hay config).
+- **Reset de fábrica** desde el dashboard para volver al hotspot `PhaseWatch_Config`.
 
 ### v0.1
 
@@ -193,6 +205,33 @@ Si el dispositivo no tiene configuración guardada en NVS, arranca en modo Acces
 - **SSID:** `PhaseWatch_Config`
 - **Contraseña:** `12345678`
 - Conectarse y abrir `http://192.168.4.1` para cargar Wi-Fi, MQTT y teléfonos SMS.
+
+## Portal Web Local
+
+Accesible en `http://192.168.4.1` (modo AP) o en la IP LAN del dispositivo (modo operativo).
+
+### Pestañas
+
+| Pestaña | Contenido |
+|---------|-----------|
+| **Dashboard** | Fases L1/L2/L3, criticidad, red activa, RSSI, MQTT, GSM, topics y batería |
+| **Configuración** | Wi-Fi, MQTT, teléfonos SMS. Guardar reinicia el dispositivo |
+| **Logs** | Registro del sistema, actualizado en vivo |
+
+### API REST
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `GET` | `/api/status` | Estado completo en JSON (fases, MQTT, GSM, topics, batería) |
+| `GET` | `/api/config` | Configuración actual (sin contraseñas) |
+| `GET` | `/api/logs` | Logs del sistema |
+| `POST` | `/api/save` | Guardar configuración y reiniciar |
+| `POST` | `/api/test` | Enviar notificación de prueba |
+| `POST` | `/api/reset` | Reset de fábrica (vuelve al modo AP) |
+
+### Batería (software)
+
+La lectura de batería proviene del comando `AT+CBC` del **SIM800L** (tensión de alimentación del módulo). El ESP32-S3 SuperMini no incluye circuito de batería propio; sin GSM activo el dashboard muestra *no disponible*.
 
 ## Esquema de Conexiones
 
