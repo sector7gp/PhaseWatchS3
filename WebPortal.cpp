@@ -97,17 +97,17 @@ void WebPortal::handleRoot() {
 }
 
 void WebPortal::handleSaveConfig() {
-    if (server.hasArg("wifiSSID")) strncpy(StorageManager::config.wifiSSID, server.arg("wifiSSID").c_str(), MAX_SSID_LEN);
-    if (server.hasArg("wifiPass") && server.arg("wifiPass").length() > 0) strncpy(StorageManager::config.wifiPass, server.arg("wifiPass").c_str(), MAX_PASS_LEN);
+    if (server.hasArg("wifiSSID")) safeStrCopy(StorageManager::config.wifiSSID, MAX_SSID_LEN, server.arg("wifiSSID").c_str());
+    if (server.hasArg("wifiPass") && server.arg("wifiPass").length() > 0) safeStrCopy(StorageManager::config.wifiPass, MAX_PASS_LEN, server.arg("wifiPass").c_str());
     
-    if (server.hasArg("mqttHost")) strncpy(StorageManager::config.mqttHost, server.arg("mqttHost").c_str(), MAX_MQTT_HOST_LEN);
+    if (server.hasArg("mqttHost")) safeStrCopy(StorageManager::config.mqttHost, MAX_MQTT_HOST_LEN, server.arg("mqttHost").c_str());
     if (server.hasArg("mqttPort")) StorageManager::config.mqttPort = server.arg("mqttPort").toInt();
-    if (server.hasArg("mqttUser")) strncpy(StorageManager::config.mqttUser, server.arg("mqttUser").c_str(), MAX_MQTT_USER_LEN);
-    if (server.hasArg("mqttPass") && server.arg("mqttPass").length() > 0) strncpy(StorageManager::config.mqttPass, server.arg("mqttPass").c_str(), MAX_MQTT_PASS_LEN);
+    if (server.hasArg("mqttUser")) safeStrCopy(StorageManager::config.mqttUser, MAX_MQTT_USER_LEN, server.arg("mqttUser").c_str());
+    if (server.hasArg("mqttPass") && server.arg("mqttPass").length() > 0) safeStrCopy(StorageManager::config.mqttPass, MAX_MQTT_PASS_LEN, server.arg("mqttPass").c_str());
     
-    if (server.hasArg("phone0")) strncpy(StorageManager::config.phones[0], server.arg("phone0").c_str(), MAX_PHONE_LEN);
-    if (server.hasArg("phone1")) strncpy(StorageManager::config.phones[1], server.arg("phone1").c_str(), MAX_PHONE_LEN);
-    if (server.hasArg("phone2")) strncpy(StorageManager::config.phones[2], server.arg("phone2").c_str(), MAX_PHONE_LEN);
+    if (server.hasArg("phone0")) safeStrCopy(StorageManager::config.phones[0], MAX_PHONE_LEN, server.arg("phone0").c_str());
+    if (server.hasArg("phone1")) safeStrCopy(StorageManager::config.phones[1], MAX_PHONE_LEN, server.arg("phone1").c_str());
+    if (server.hasArg("phone2")) safeStrCopy(StorageManager::config.phones[2], MAX_PHONE_LEN, server.arg("phone2").c_str());
     
     StorageManager::save();
     

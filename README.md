@@ -1,6 +1,20 @@
 # PhaseWatchS3
 
+**Versión:** v0.1
+
 Sistema de monitoreo de fases (L1, L2, L3) para ESP32-S3 con doble conectividad (Wi-Fi y GPRS), notificaciones MQTT y alertas por SMS.
+
+## Changelog
+
+### v0.1
+
+Correcciones de estabilidad y conectividad sobre el commit inicial:
+
+- **`isConnected()`** ahora requiere red activa **y** sesión MQTT conectada, para que el LED verde refleje el estado real del dispositivo.
+- **Cambio de red (Wi-Fi ↔ GPRS):** se desconecta MQTT antes de alternar entre clientes, evitando sesiones colgadas.
+- **Reconexión no bloqueante:** el `loop` principal ya no se congela reintentando Wi-Fi; los reintentos se limitan a cada 30 s. En el arranque se mantiene conexión bloqueante con alimentación del watchdog.
+- **SMS:** solo se envía si el módem GSM está registrado en red; si el dispositivo opera solo por Wi-Fi, se omite con un log de advertencia.
+- **Copia segura de strings:** `safeStrCopy()` garantiza terminador nulo en la configuración guardada desde el portal web y al cargar desde NVS.
 
 ## Esquema de Conexiones
 
@@ -18,9 +32,10 @@ Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de r
     *   *Nota Divisor de Tensión:* El SIM800L tiene nivel lógico de 2.8V. La señal TX del ESP32 (3.3V) podría requerir un divisor resistivo simple (Ej: 10k en serie, 20k a GND) para no dañar el pin RX del SIM800L si la placa no trae adaptación de niveles.
 
 ### LED de Estado (RGB o individuales)
-*   **LED Rojo (Alertas):** GPIO 15
-*   **LED Verde (Conexión):** GPIO 16
-*   **LED Azul (Modo AP/Config):** GPIO 17
+*   **LED Rojo (Alertas):** GPIO 15 — parpadea cuando hay falla de fase.
+*   **LED Verde (Conexión):** GPIO 16 — fijo cuando las fases están OK y MQTT está conectado.
+*   **LED Azul (Modo AP/Config):** GPIO 17 — fijo en modo configuración (Access Point).
+*   **Amarillo (R+G):** parpadea cuando las fases están OK pero no hay conexión MQTT activa.
 
 ## Documentación de Tópicos MQTT
 
@@ -37,7 +52,7 @@ Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de r
         ```json
         {
           "type": "heartbeat",
-          "timestamp": 1690000000,
+          "timestamp": 3600,
           "l1": true,
           "l2": true,
           "l3": true,
@@ -46,7 +61,7 @@ Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de r
           "rssi": -65
         }
         ```
-        *(Valores de criticality: "NORMAL", "PARTIAL_FAIL", "TOTAL_FAIL" | network: "WIFI", "GPRS")*
+        *(Valores de criticality: "NORMAL", "PARTIAL_FAIL", "TOTAL_FAIL" | network: "WIFI", "GPRS", "NONE" | timestamp: segundos desde el arranque del dispositivo)*
 
 2.  **Eventos (Caída o Restauración de Fase)**
     *   **Tópico:** `phasewatch/<client_id>/events`

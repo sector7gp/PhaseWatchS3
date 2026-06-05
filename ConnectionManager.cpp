@@ -2,6 +2,7 @@
 #include "StorageManager.h"
 #include "PhaseMonitor.h"
 #include "Logger.h"
+#include <esp_task_wdt.h>
 
 // Hardware Serial for GSM
 HardwareSerial SerialGSM(1);
@@ -11,11 +12,23 @@ WiFiClient wifiClient;
 
 PubSubClient mqttWiFi(wifiClient);
 PubSubClient mqttGSM(gsmClient);
-PubSubClient* mqtt;
+PubSubClient* mqtt = nullptr;
 
 NetworkMode ConnectionManager::currentNetwork = NET_NONE;
 unsigned long ConnectionManager::lastHeartbeatTime = 0;
+unsigned long ConnectionManager::lastReconnectAttempt = 0;
+unsigned long ConnectionManager::wifiConnectStartTime = 0;
+bool ConnectionManager::wifiConnectPending = false;
 String macStr = "";
+
+#define WIFI_CONNECT_TIMEOUT_MS 15000
+#define RECONNECT_INTERVAL_MS 30000
+
+void ConnectionManager::disconnectMQTT() {
+    if (mqtt != nullptr && mqtt->connected()) {
+        mqtt->disconnect();
+    }
+}
 
 void ConnectionManager::init() {
     macStr = WiFi.macAddress();
@@ -26,32 +39,61 @@ void ConnectionManager::init() {
     modem.init();
     
     if (StorageManager::config.configured) {
-        connectWiFi();
+        connectWiFiBlocking();
     }
 }
 
-void ConnectionManager::connectWiFi() {
+void ConnectionManager::startWiFiConnection() {
     Logger::info("Connecting to WiFi...");
+    disconnectMQTT();
     WiFi.begin(StorageManager::config.wifiSSID, StorageManager::config.wifiPass);
-    
+    wifiConnectPending = true;
+    wifiConnectStartTime = millis();
+}
+
+void ConnectionManager::pollWiFiConnection() {
+    if (!wifiConnectPending) return;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Logger::info("WiFi Connected.");
+        wifiConnectPending = false;
+        currentNetwork = NET_WIFI;
+        mqtt = &mqttWiFi;
+        mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
+        return;
+    }
+
+    if (millis() - wifiConnectStartTime > WIFI_CONNECT_TIMEOUT_MS) {
+        Logger::warn("WiFi Failed. Fallback to GSM.");
+        wifiConnectPending = false;
+        connectGSM();
+    }
+}
+
+void ConnectionManager::connectWiFiBlocking() {
+    startWiFiConnection();
+
     int retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 15) {
         delay(500);
+        esp_task_wdt_reset();
         retries++;
     }
-    
+
     if (WiFi.status() == WL_CONNECTED) {
-        Logger::info("WiFi Connected.");
+        wifiConnectPending = false;
         currentNetwork = NET_WIFI;
         mqtt = &mqttWiFi;
         mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
     } else {
-        Logger::warn("WiFi Failed. Fallback to GSM.");
+        wifiConnectPending = false;
         connectGSM();
     }
 }
 
 void ConnectionManager::connectGSM() {
+    disconnectMQTT();
+
     Logger::info("Connecting to GSM network...");
     if (!modem.waitForNetwork(10000)) {
         Logger::error("GSM Network failed.");
@@ -65,8 +107,6 @@ void ConnectionManager::connectGSM() {
         return;
     }
     
-    // GPRS APN - Many standard SIMs work with generic or no APN, but better to set it if needed
-    // Assuming automatic or basic internet APN. We can use "internet" as generic.
     Logger::info("Connecting to GPRS...");
     if (!modem.gprsConnect("internet", "", "")) {
         Logger::error("GPRS Failed.");
@@ -93,19 +133,28 @@ void ConnectionManager::update() {
 }
 
 void ConnectionManager::maintainConnection() {
+    if (wifiConnectPending) {
+        pollWiFiConnection();
+        return;
+    }
+
     if (currentNetwork == NET_WIFI && WiFi.status() != WL_CONNECTED) {
         Logger::warn("WiFi lost. Switching to GSM...");
+        currentNetwork = NET_NONE;
+        lastReconnectAttempt = millis();
         connectGSM();
     } else if (currentNetwork == NET_GSM && WiFi.status() == WL_CONNECTED) {
-        // Option to switch back to WiFi if it comes back
         Logger::info("WiFi restored. Switching back...");
+        disconnectMQTT();
         modem.gprsDisconnect();
         currentNetwork = NET_WIFI;
         mqtt = &mqttWiFi;
         mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
     } else if (currentNetwork == NET_NONE) {
-        // Try WiFi first
-        connectWiFi();
+        if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL_MS) {
+            lastReconnectAttempt = millis();
+            startWiFiConnection();
+        }
     }
 }
 
@@ -163,7 +212,6 @@ void ConnectionManager::publishEvent(const char* eventType, const char* message)
         Logger::info(("MQTT Published: " + payload).c_str());
     }
     
-    // Also send SMS
     if (String(eventType) == "PHASE_LOST" || String(eventType) == "PHASE_RESTORED" || String(eventType) == "TEST") {
         sendSMS(message);
     }
@@ -178,9 +226,14 @@ void ConnectionManager::publishHeartbeat() {
 }
 
 void ConnectionManager::sendSMS(const char* message) {
+    if (!modem.isNetworkConnected()) {
+        Logger::warn("SMS skipped: GSM not registered.");
+        return;
+    }
+
     for (int i=0; i<MAX_PHONE_NUMBERS; i++) {
         String phone = StorageManager::config.phones[i];
-        if (phone.length() > 5) { // Basic validation
+        if (phone.length() > 5) {
             Logger::info(("Sending SMS to " + phone).c_str());
             if (modem.sendSMS(phone, String(message))) {
                 Logger::info("SMS sent.");
@@ -192,7 +245,10 @@ void ConnectionManager::sendSMS(const char* message) {
 }
 
 NetworkMode ConnectionManager::getCurrentNetwork() { return currentNetwork; }
-bool ConnectionManager::isConnected() { return currentNetwork != NET_NONE; }
+
+bool ConnectionManager::isConnected() {
+    return currentNetwork != NET_NONE && mqtt != nullptr && mqtt->connected();
+}
 
 int ConnectionManager::getRSSI() {
     if (currentNetwork == NET_WIFI) {

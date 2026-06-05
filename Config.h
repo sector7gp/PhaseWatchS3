@@ -29,9 +29,9 @@
 #define MAX_MQTT_PORT 65535
 
 // --- TIMINGS ---
-#define DEBOUNCE_DELAY_MS 50       // 50ms to filter 50Hz noise/flicker
-#define MQTT_KEEPALIVE_MS 30000    // 30 seconds
-#define WDT_TIMEOUT_MS 30000       // 30 seconds watchdog
+#define DEBOUNCE_DELAY_MS 50    // 50ms to filter 50Hz noise/flicker
+#define MQTT_KEEPALIVE_MS 30000 // 30 seconds
+#define WDT_TIMEOUT_MS 30000    // 30 seconds watchdog
 
 // --- ENUMS ---
 enum SystemState {
@@ -41,14 +41,12 @@ enum SystemState {
   STATE_NORMAL_OP
 };
 
-enum PhaseCriticality {
-  CRIT_NORMAL,
-  CRIT_PARTIAL_FAIL,
-  CRIT_TOTAL_FAIL
-};
+enum PhaseCriticality { CRIT_NORMAL, CRIT_PARTIAL_FAIL, CRIT_TOTAL_FAIL };
 
-enum NetworkMode {
-  NET_NONE,
-  NET_WIFI,
-  NET_GSM
-};
+enum NetworkMode { NET_NONE, NET_WIFI, NET_GSM };
+
+inline void safeStrCopy(char* dest, size_t destSize, const char* src) {
+    if (destSize == 0) return;
+    strncpy(dest, src, destSize - 1);
+    dest[destSize - 1] = '\0';
+}

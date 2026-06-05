@@ -19,8 +19,11 @@ public:
     static void sendTestNotification();
 
 private:
-    static void connectWiFi();
+    static void connectWiFiBlocking();
+    static void startWiFiConnection();
+    static void pollWiFiConnection();
     static void connectGSM();
+    static void disconnectMQTT();
     static void maintainConnection();
     static void maintainMQTT();
     static void publishHeartbeat();
@@ -28,6 +31,9 @@ private:
     
     static NetworkMode currentNetwork;
     static unsigned long lastHeartbeatTime;
+    static unsigned long lastReconnectAttempt;
+    static unsigned long wifiConnectStartTime;
+    static bool wifiConnectPending;
     
     static String getMacAddress();
     static String generateJsonPayload(const char* msgType, const char* event, const char* message);

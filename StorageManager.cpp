@@ -21,16 +21,16 @@ void StorageManager::load() {
     
     config.configured = preferences.getBool("configured", false);
     
-    strncpy(config.wifiSSID, ssid.c_str(), MAX_SSID_LEN);
-    strncpy(config.wifiPass, pass.c_str(), MAX_PASS_LEN);
-    strncpy(config.mqttHost, mHost.c_str(), MAX_MQTT_HOST_LEN);
+    safeStrCopy(config.wifiSSID, MAX_SSID_LEN, ssid.c_str());
+    safeStrCopy(config.wifiPass, MAX_PASS_LEN, pass.c_str());
+    safeStrCopy(config.mqttHost, MAX_MQTT_HOST_LEN, mHost.c_str());
     config.mqttPort = mPort;
-    strncpy(config.mqttUser, mUser.c_str(), MAX_MQTT_USER_LEN);
-    strncpy(config.mqttPass, mPass.c_str(), MAX_MQTT_PASS_LEN);
+    safeStrCopy(config.mqttUser, MAX_MQTT_USER_LEN, mUser.c_str());
+    safeStrCopy(config.mqttPass, MAX_MQTT_PASS_LEN, mPass.c_str());
     
     for (int i = 0; i < MAX_PHONE_NUMBERS; i++) {
         String p = preferences.getString(("phone" + String(i)).c_str(), "");
-        strncpy(config.phones[i], p.c_str(), MAX_PHONE_LEN);
+        safeStrCopy(config.phones[i], MAX_PHONE_LEN, p.c_str());
     }
     
     preferences.end();
