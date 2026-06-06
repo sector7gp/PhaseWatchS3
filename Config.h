@@ -32,10 +32,13 @@
 #define PIN_PHASE_2 5   // GP5
 #define PIN_PHASE_3 6   // GP6
 
-// --- LEDs de estado (cátodo común, HIGH = ON; resistencia ~330Ω) ---
+// --- LEDs de estado (cátodo común, PWM HIGH-side; resistencia ~330Ω) ---
 #define PIN_LED_R 1     // GP1 — rojo: alerta / falla de fase
 #define PIN_LED_G 2     // GP2 — verde: fases OK + MQTT conectado
 #define PIN_LED_B 3     // GP3 — azul: modo AP / configuración
+#define LED_PWM_FREQ_HZ 5000
+#define LED_PWM_BITS 8
+#define LED_BRIGHTNESS_PERCENT 25  // brillo ON (0-100 %)
 
 // --- Consola debug en header TX/RX (UART0) ---
 #define PIN_DEBUG_RX 44   // Header RX ← adaptador USB-TTL TX

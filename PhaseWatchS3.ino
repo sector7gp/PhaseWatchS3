@@ -12,11 +12,25 @@
 
 unsigned long lastBlinkTime = 0;
 bool ledState = false;
+uint8_t ledPwmOnDuty = 0;
+
+void initStatusLeds() {
+    ledcAttach(PIN_LED_R, LED_PWM_FREQ_HZ, LED_PWM_BITS);
+    ledcAttach(PIN_LED_G, LED_PWM_FREQ_HZ, LED_PWM_BITS);
+    ledcAttach(PIN_LED_B, LED_PWM_FREQ_HZ, LED_PWM_BITS);
+
+    uint8_t pct = LED_BRIGHTNESS_PERCENT;
+    if (pct > 100) pct = 100;
+    ledPwmOnDuty = (uint8_t)((255UL * pct) / 100UL);
+    if (pct > 0 && ledPwmOnDuty == 0) ledPwmOnDuty = 1;
+
+    setLED(false, false, false);
+}
 
 void setLED(bool r, bool g, bool b) {
-    digitalWrite(PIN_LED_R, r ? HIGH : LOW);
-    digitalWrite(PIN_LED_G, g ? HIGH : LOW);
-    digitalWrite(PIN_LED_B, b ? HIGH : LOW);
+    ledcWrite(PIN_LED_R, r ? ledPwmOnDuty : 0);
+    ledcWrite(PIN_LED_G, g ? ledPwmOnDuty : 0);
+    ledcWrite(PIN_LED_B, b ? ledPwmOnDuty : 0);
 }
 
 void logPeriodicUsbStatus() {
@@ -52,11 +66,7 @@ void setup() {
     WiFi.mode(WIFI_OFF);
     delay(100);
     
-    // Config LEDs
-    pinMode(PIN_LED_R, OUTPUT);
-    pinMode(PIN_LED_G, OUTPUT);
-    pinMode(PIN_LED_B, OUTPUT);
-    setLED(false, false, false);
+    initStatusLeds();
     
     Logger::init();
     Logger::info("Booting PhaseWatch S3...");

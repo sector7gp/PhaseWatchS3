@@ -1,10 +1,14 @@
 # PhaseWatchS3
 
-**Versión:** v0.5
+**Versión:** v0.5.1
 
 Sistema de monitoreo de fases (L1, L2, L3) para ESP32-S3 con doble conectividad (Wi-Fi y GPRS), notificaciones MQTT y alertas por SMS.
 
 ## Changelog
+
+### v0.5.1
+
+- **LEDs con PWM:** brillo configurable (`LED_BRIGHTNESS_PERCENT`, default **25%**) en GP1/GP2/GP3.
 
 ### v0.5
 
@@ -323,7 +327,8 @@ Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de r
 *   **No usar GPIO 18/19/20** — no están en el header o son USB interno.
     *   *Nota Divisor de Tensión:* El SIM800L tiene nivel lógico de 2.8V. La señal TX del ESP32 (3.3V) podría requerir un divisor resistivo simple (Ej: 10k en serie, 20k a GND) para no dañar el pin RX del SIM800L si la placa no trae adaptación de niveles.
 
-### LED de Estado (RGB o individuales, resistencia ~330Ω)
+### LED de Estado (RGB o individuales, resistencia ~330Ω, PWM ~5 kHz)
+*   **Brillo default:** 25% (`LED_BRIGHTNESS_PERCENT` en `Config.h`).
 *   **LED Rojo:** GP1 / GPIO 1 — parpadea cuando hay falla de fase.
 *   **LED Verde:** GP2 / GPIO 2 — fijo cuando las fases están OK y MQTT está conectado.
 *   **LED Azul:** GP3 / GPIO 3 — fijo en modo configuración (Access Point).
