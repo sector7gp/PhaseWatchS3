@@ -29,18 +29,170 @@ bool ConnectionManager::gsmSerialStarted = false;
 String ConnectionManager::gsmDebugInfo = "Sin inicializar";
 ConnectionManager::BootPhase ConnectionManager::bootPhase = ConnectionManager::BOOT_DONE;
 unsigned long ConnectionManager::bootPhaseStart = 0;
+bool ConnectionManager::gsmRegPending = false;
+bool ConnectionManager::gsmGprsPending = false;
+unsigned long ConnectionManager::gsmRegStart = 0;
+uint32_t ConnectionManager::gsmRegTimeoutMs = 0;
+unsigned long ConnectionManager::gsmRegLastLog = 0;
+unsigned long ConnectionManager::gsmRegLastTick = 0;
+volatile bool ConnectionManager::gsmUartLocked = false;
 String macStr = "";
+
+class GsmUartGuard {
+public:
+    explicit GsmUartGuard(bool acquired) : ok(acquired) {}
+    ~GsmUartGuard() { if (ok) ConnectionManager::unlockGsmUart(); }
+    bool active() const { return ok; }
+private:
+    bool ok;
+};
 
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 #define RECONNECT_INTERVAL_MS 30000
 #define GSM_PROBE_INTERVAL_MS 30000
 #define GSM_BOOT_DELAY_MS 3000
+#define GSM_REG_TIMEOUT_MS 120000
+#define GSM_REG_TICK_MS 3000
+#define GSM_BOOT_REG_WAIT_MS 60000
+#define GSM_DIAG_LOG_INTERVAL_MS 30000
+
+static const char* simStatusLabel(SimStatus s) {
+    switch (s) {
+        case SIM_READY: return "READY";
+        case SIM_LOCKED: return "PIN/PUK";
+        default: return "ERROR/NO SIM";
+    }
+}
+
+static const char* regStatusLabel(SIM800RegStatus r) {
+    switch (r) {
+        case REG_OK_HOME: return "HOME";
+        case REG_OK_ROAMING: return "ROAMING";
+        case REG_SEARCHING: return "BUSCANDO";
+        case REG_DENIED: return "DENEGADO";
+        case REG_UNREGISTERED: return "SIN REGISTRO";
+        default: return "?";
+    }
+}
+
+void ConnectionManager::updateGsmDebugStatus(bool quick) {
+    feedWdt();
+    int csq = modem.getSignalQuality();
+    SIM800RegStatus reg = modem.getRegistrationStatus();
+    String simStr;
+    if (quick) {
+        simStr = gsmModemReady ? "READY" : "?";
+    } else {
+        simStr = String(simStatusLabel(modem.getSimStatus(1000)));
+    }
+    gsmDebugInfo = "SIM=" + simStr +
+                   " CREG=" + String(regStatusLabel(reg)) +
+                   "(" + String((int)reg) + ")" +
+                   " CSQ=" + String(csq) + "/31";
+}
+
+void ConnectionManager::logGsmDiagnostics(bool quick) {
+    updateGsmDebugStatus(quick);
+    Logger::info(("GSM diag: " + gsmDebugInfo).c_str());
+}
+
+void ConnectionManager::startGsmRegistration(uint32_t timeout_ms) {
+    gsmRegPending = true;
+    gsmRegStart = millis();
+    gsmRegTimeoutMs = timeout_ms;
+    gsmRegLastLog = 0;
+    gsmDebugInfo = "SIM OK. Registrando en red (fondo)...";
+    Logger::info("GSM: registro en segundo plano iniciado.");
+}
+
+void ConnectionManager::completeGprsConnect() {
+    if (!lockGsmUart()) {
+        Logger::warn("GSM: GPRS diferido (UART ocupado).");
+        gsmGprsPending = true;
+        return;
+    }
+
+    Logger::info("Connecting to GPRS...");
+    feedWdt();
+    if (!modem.gprsConnect("internet", "", "")) {
+        feedWdt();
+        Logger::error("GPRS Failed.");
+        currentNetwork = NET_NONE;
+        unlockGsmUart();
+        return;
+    }
+
+    feedWdt();
+    Logger::info("GPRS Connected.");
+    currentNetwork = NET_GSM;
+    mqtt = &mqttGSM;
+    mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
+    unlockGsmUart();
+}
+
+void ConnectionManager::tickGsmRegistration() {
+    if (!gsmRegPending || !gsmModemReady || gsmUartLocked) return;
+    if (millis() - gsmRegLastTick < GSM_REG_TICK_MS) return;
+    gsmRegLastTick = millis();
+
+    feedWdt();
+    yield();
+
+    if (modem.isNetworkConnected()) {
+        logGsmDiagnostics(true);
+        gsmRegPending = false;
+        Logger::info("GSM: registrado en red celular.");
+        if (gsmGprsPending) {
+            gsmGprsPending = false;
+            completeGprsConnect();
+        }
+        return;
+    }
+
+    SIM800RegStatus reg = modem.getRegistrationStatus();
+    if (reg == REG_DENIED) {
+        logGsmDiagnostics(true);
+        gsmRegPending = false;
+        gsmGprsPending = false;
+        Logger::error("GSM: registro denegado (plan/SIM).");
+        return;
+    }
+
+    if (millis() - gsmRegStart > gsmRegTimeoutMs) {
+        logGsmDiagnostics(true);
+        gsmRegPending = false;
+        gsmGprsPending = false;
+        Logger::warn("GSM: timeout registro en fondo.");
+        return;
+    }
+
+    updateGsmDebugStatus(true);
+    if (gsmRegLastLog == 0 || millis() - gsmRegLastLog > GSM_DIAG_LOG_INTERVAL_MS) {
+        gsmRegLastLog = millis();
+        Logger::info(("GSM diag: " + gsmDebugInfo).c_str());
+        if (reg == REG_SEARCHING) {
+            Logger::info("GSM: buscando operador (fondo)...");
+        }
+    }
+}
 
 void ConnectionManager::feedWdt() {
     esp_err_t err = esp_task_wdt_reset();
     if (err == ESP_ERR_NOT_FOUND) {
         esp_task_wdt_add(NULL);
     }
+    yield();
+}
+
+bool ConnectionManager::lockGsmUart() {
+    if (gsmUartLocked) return false;
+    gsmUartLocked = true;
+    feedWdt();
+    return true;
+}
+
+void ConnectionManager::unlockGsmUart() {
+    gsmUartLocked = false;
 }
 
 void ConnectionManager::disconnectMQTT() {
@@ -71,15 +223,17 @@ void ConnectionManager::initGsmSerial() {
                       " (<- SIM TX), pin TX=GPIO" + String(PIN_GSM_TX) +
                       " (-> SIM RX), " + String(GSM_BAUD_RATE) + " baud";
     Logger::info(uartInfo.c_str());
-#if GSM_DEBUG_AT
-    Logger::info("GSM_DEBUG_AT activo: comandos AT visibles en este USB @115200");
-#else
-    Logger::info("AT del SIM800 solo por pines TX/RX del header @9600");
-#endif
+    Logger::info("AT debug: consola en portal web (pestaña Logs)");
     gsmDebugInfo = uartInfo;
 }
 
 bool ConnectionManager::probeGsmModem(bool verbose) {
+    GsmUartGuard guard(lockGsmUart());
+    if (!guard.active()) {
+        if (verbose) Logger::warn("GSM: UART ocupado, probe omitido.");
+        return gsmModemReady;
+    }
+
     initGsmSerial();
     feedWdt();
 
@@ -110,12 +264,12 @@ bool ConnectionManager::probeGsmModem(bool verbose) {
             String info = modem.getModemInfo();
             gsmDebugInfo = "Detectado: " + info;
             Logger::info(("GSM detectado — " + info).c_str());
+            logGsmDiagnostics(true);
 
             if (modem.isNetworkConnected()) {
                 Logger::info("GSM: registrado en red celular.");
             } else {
-                Logger::warn("GSM: modem responde pero sin registro de red.");
-                gsmDebugInfo += " (sin red)";
+                startGsmRegistration(GSM_REG_TIMEOUT_MS);
             }
             return true;
         }
@@ -136,6 +290,15 @@ bool ConnectionManager::probeGsmModem(bool verbose) {
 bool ConnectionManager::retryGsmConnection() {
     Logger::warn("GSM: reintento manual iniciado.");
     feedWdt();
+
+    gsmRegPending = false;
+    gsmGprsPending = false;
+
+    GsmUartGuard guard(lockGsmUart());
+    if (!guard.active()) {
+        Logger::warn("GSM: UART ocupado, reintento omitido.");
+        return false;
+    }
 
     gsmModemReady = false;
     gsmDebugInfo = "Reiniciando UART GSM...";
@@ -158,25 +321,94 @@ bool ConnectionManager::retryGsmConnection() {
         return false;
     }
 
-    Logger::info("GSM: esperando registro en red (15s)...");
-    gsmDebugInfo = "Modem OK. Buscando red celular...";
-    feedWdt();
-
-    if (modem.waitForNetwork(15000)) {
+    if (!modem.isNetworkConnected()) {
         feedWdt();
-        Logger::info("GSM: red celular disponible.");
-        gsmDebugInfo = "Modem OK. Red celular registrada.";
-        return true;
+        Logger::warn("GSM: reiniciando radio (reintento manual)...");
+        gsmDebugInfo = "Reiniciando radio...";
+        modem.restart();
+        feedWdt();
+        startGsmRegistration(GSM_REG_TIMEOUT_MS);
     }
 
-    feedWdt();
-    Logger::warn("GSM: modem detectado pero sin registro de red.");
-    gsmDebugInfo = "Modem OK pero sin registro de red (SIM/antena/senal)";
     return true;
 }
 
 String ConnectionManager::getGsmDebugInfo() {
     return gsmDebugInfo;
+}
+
+String ConnectionManager::sendAtCommand(const char* cmd) {
+    GsmUartGuard guard(lockGsmUart());
+    if (!guard.active()) {
+        return "ERROR: GSM ocupado (modem en uso, reintenta)";
+    }
+
+    bool resumeReg = gsmRegPending;
+    gsmRegPending = false;
+
+    String command = String(cmd);
+    command.trim();
+    if (command.length() == 0 || command.length() > 128) {
+        gsmRegPending = resumeReg;
+        return "ERROR: comando invalido (max 128 chars)";
+    }
+
+    for (size_t i = 0; i < command.length(); i++) {
+        char c = command.charAt(i);
+        if (c < 32 || c == 127) {
+            gsmRegPending = resumeReg;
+            return "ERROR: caracteres no permitidos";
+        }
+    }
+
+    command.toUpperCase();
+    if (!command.startsWith("AT")) {
+        if (command.startsWith("+")) {
+            command = "AT" + command;
+        } else {
+            command = "AT+" + command;
+        }
+    }
+
+    initGsmSerial();
+    feedWdt();
+
+    while (SerialGSM.available()) {
+        SerialGSM.read();
+    }
+
+    SerialGSM.print(command);
+    SerialGSM.print("\r\n");
+
+    String response = "";
+    response.reserve(256);
+    unsigned long lastData = millis();
+    unsigned long start = millis();
+
+    while (millis() - start < 4000) {
+        feedWdt();
+        while (SerialGSM.available() && response.length() < 480) {
+            char c = SerialGSM.read();
+            response += c;
+            lastData = millis();
+        }
+
+        if (response.length() > 0) {
+            if (response.indexOf("OK") >= 0 || response.indexOf("ERROR") >= 0) {
+                if (millis() - lastData > 200) break;
+            }
+        }
+        delay(10);
+    }
+
+    response.trim();
+    if (response.length() == 0) {
+        response = "(sin respuesta en 4s)";
+    }
+
+    gsmRegPending = resumeReg;
+    Logger::info(("AT manual [" + command + "]: " + response).c_str());
+    return response;
 }
 
 void ConnectionManager::init() {
@@ -205,10 +437,33 @@ void ConnectionManager::processBootstrap() {
             bootPhaseStart = millis();
             probeGsmModem(true);
             lastGsmProbe = millis();
-            bootPhase = BOOT_WIFI;
-            bootPhaseStart = millis();
-            startWiFiConnection();
-            Logger::info("Bootstrap: WiFi en progreso...");
+            if (gsmModemReady && !modem.isNetworkConnected()) {
+                bootPhase = BOOT_GSM_REG;
+                bootPhaseStart = millis();
+                Logger::info("Bootstrap: GSM registrando antes de WiFi...");
+            } else {
+                bootPhase = BOOT_WIFI;
+                bootPhaseStart = millis();
+                startWiFiConnection();
+                Logger::info("Bootstrap: WiFi en progreso...");
+            }
+            return;
+
+        case BOOT_GSM_REG:
+            if (modem.isNetworkConnected()) {
+                gsmRegPending = false;
+                Logger::info("Bootstrap: GSM registrado, iniciando WiFi...");
+                bootPhase = BOOT_WIFI;
+                bootPhaseStart = millis();
+                startWiFiConnection();
+                return;
+            }
+            if (millis() - bootPhaseStart > GSM_BOOT_REG_WAIT_MS) {
+                Logger::warn("Bootstrap: GSM sin registro en 60s, iniciando WiFi...");
+                bootPhase = BOOT_WIFI;
+                bootPhaseStart = millis();
+                startWiFiConnection();
+            }
             return;
 
         case BOOT_WIFI:
@@ -298,40 +553,21 @@ void ConnectionManager::connectGSM() {
         lastGsmProbe = millis();
     }
 
-    Logger::info("Connecting to GSM network...");
-    feedWdt();
-    if (!modem.waitForNetwork(10000)) {
-        feedWdt();
-        Logger::error("GSM Network failed.");
-        currentNetwork = NET_NONE;
-        return;
-    }
-
-    feedWdt();
     if (!modem.isNetworkConnected()) {
-        Logger::error("GSM not registered.");
+        Logger::info("GSM: sin registro, iniciando attach en fondo...");
+        gsmGprsPending = true;
+        startGsmRegistration(GSM_REG_TIMEOUT_MS);
         currentNetwork = NET_NONE;
         return;
     }
 
-    Logger::info("Connecting to GPRS...");
-    feedWdt();
-    if (!modem.gprsConnect("internet", "", "")) {
-        feedWdt();
-        Logger::error("GPRS Failed.");
-        currentNetwork = NET_NONE;
-        return;
-    }
-
-    feedWdt();
-    Logger::info("GPRS Connected.");
-    currentNetwork = NET_GSM;
-    mqtt = &mqttGSM;
-    mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
+    completeGprsConnect();
 }
 
 void ConnectionManager::update() {
     if (!StorageManager::config.configured) return;
+
+    tickGsmRegistration();
 
     if (bootPhase != BOOT_DONE) {
         processBootstrap();
@@ -341,13 +577,21 @@ void ConnectionManager::update() {
     if (millis() - lastGsmProbe > GSM_PROBE_INTERVAL_MS) {
         lastGsmProbe = millis();
         if (gsmModemReady) {
+            if (gsmUartLocked) return;
+            GsmUartGuard guard(lockGsmUart());
+            if (!guard.active()) return;
             feedWdt();
             gsmModemReady = modem.testAT(1000);
-            if (!gsmModemReady) {
+            if (gsmModemReady) {
+                updateGsmDebugStatus(true);
+            } else {
                 Logger::warn("GSM: modem dejo de responder.");
                 gsmDebugInfo = "Modem dejo de responder AT";
             }
         } else {
+            if (gsmUartLocked) return;
+            GsmUartGuard guard(lockGsmUart());
+            if (!guard.active()) return;
             Logger::info("GSM: reintento automatico (testAT rapido)...");
             initGsmSerial();
             feedWdt();

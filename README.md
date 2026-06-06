@@ -1,10 +1,22 @@
 # PhaseWatchS3
 
-**Versión:** v0.3
+**Versión:** v0.4
 
 Sistema de monitoreo de fases (L1, L2, L3) para ESP32-S3 con doble conectividad (Wi-Fi y GPRS), notificaciones MQTT y alertas por SMS.
 
 ## Changelog
+
+### v0.4
+
+Estabilidad GSM y herramientas de depuración:
+
+- **Registro GSM en segundo plano:** sin bloquear el `loop` ni el arranque; consultas AT limitadas a cada 3 s.
+- **Bootstrap GSM → WiFi:** el módem registra en red hasta 60 s antes de iniciar Wi-Fi (menos contención RF/alimentación).
+- **Diagnóstico GSM:** `SIM=… CREG=…(código) CSQ=…/31` en logs y dashboard (`gsm_debug`).
+- **Consola AT en portal:** pestaña Logs con campo de texto, atajos (`CREG?`, `CSQ`, `CCID`, etc.) y API `POST /api/gsm/at`.
+- **Mutex UART GSM:** evita colisiones entre registro automático y comandos AT manuales (fix panics/crashes).
+- **Fix watchdog:** sin monitorear tareas idle; stack del loop ampliado a 16 KB; `yield()` en operaciones GSM.
+- **TinyGSM debug desactivado** por defecto (`GSM_DEBUG_AT=0`); usar consola AT del portal para depurar.
 
 ### v0.3
 
@@ -113,6 +125,7 @@ arduino-cli core install esp32:esp32
 arduino-cli lib install "PubSubClient" "TinyGSM"
 
 arduino-cli compile \
+  --build-property build.extra_flags=-DARDUINO_LOOP_STACK_SIZE=16384 \
   --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=4M,FlashMode=qio,PartitionScheme=default \
   --output-dir build \
   PhaseWatchS3/
@@ -231,7 +244,7 @@ Accesible en `http://192.168.4.1` (modo AP) o en la IP LAN del dispositivo (modo
 |---------|-----------|
 | **Dashboard** | Fases L1/L2/L3, criticidad, red activa, RSSI, MQTT, GSM, topics y batería |
 | **Configuración** | Wi-Fi, MQTT, teléfonos SMS. Guardar reinicia el dispositivo |
-| **Logs** | Registro del sistema, actualizado en vivo |
+| **Logs** | Registro del sistema y **consola AT** para depurar el SIM800 |
 
 ### API REST
 
@@ -242,6 +255,8 @@ Accesible en `http://192.168.4.1` (modo AP) o en la IP LAN del dispositivo (modo
 | `GET` | `/api/logs` | Logs del sistema |
 | `POST` | `/api/save` | Guardar configuración y reiniciar |
 | `POST` | `/api/test` | Enviar notificación de prueba |
+| `POST` | `/api/gsm/retry` | Reintentar detección/registro GSM |
+| `POST` | `/api/gsm/at` | Enviar comando AT al SIM800 (`{"cmd":"AT+CREG?"}`) |
 | `POST` | `/api/reset` | Reset de fábrica (vuelve al modo AP) |
 
 ### Batería (software)

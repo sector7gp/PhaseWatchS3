@@ -42,7 +42,13 @@ button.danger{background:var(--err)}
 button:disabled{opacity:.6;cursor:not-allowed}
 .actions{display:grid;gap:8px;grid-template-columns:1fr}
 @media(min-width:500px){.actions{grid-template-columns:1fr 1fr}}
-#logsBox{background:#0b1220;border:1px solid var(--border);border-radius:var(--radius);padding:12px;min-height:280px;max-height:420px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
+#logsBox,#atBox{background:#0b1220;border:1px solid var(--border);border-radius:var(--radius);padding:12px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
+#logsBox{min-height:220px;max-height:320px}
+#atBox{min-height:140px;max-height:220px;margin-top:10px}
+.at-row{display:grid;gap:8px;grid-template-columns:1fr auto;align-items:end;margin-top:10px}
+.at-row button{margin-top:0;width:auto;min-width:100px}
+.at-presets{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.at-presets button{width:auto;margin-top:0;padding:6px 10px;font-size:.75rem}
 .topic-list{display:grid;gap:8px}
 .topic-item{padding:10px;border:1px solid var(--border);border-radius:8px;background:#111827}
 .topic-item span{display:block;font-size:.75rem;color:var(--muted);margin-bottom:4px}
@@ -148,6 +154,21 @@ button:disabled{opacity:.6;cursor:not-allowed}
 <section id="logs" class="panel">
   <pre id="logsBox">Cargando logs...</pre>
   <button class="secondary" id="btnRefreshLogs">Actualizar logs</button>
+  <h3 style="margin:16px 0 8px;color:var(--muted);font-size:.85rem">CONSOLA AT (SIM800 @9600)</h3>
+  <p style="color:var(--muted);font-size:.8rem;margin-bottom:8px">Enviá comandos al modem por UART. Podés escribir <b>AT+CREG?</b> o solo <b>+CREG?</b>.</p>
+  <div class="at-row">
+    <div><label>Comando</label><input id="atCmd" placeholder="AT+CSQ" autocomplete="off" spellcheck="false"></div>
+    <button type="button" id="btnSendAt" class="secondary">Enviar</button>
+  </div>
+  <div class="at-presets">
+    <button type="button" class="secondary at-preset" data-cmd="AT">AT</button>
+    <button type="button" class="secondary at-preset" data-cmd="AT+CPIN?">CPIN?</button>
+    <button type="button" class="secondary at-preset" data-cmd="AT+CREG?">CREG?</button>
+    <button type="button" class="secondary at-preset" data-cmd="AT+CSQ">CSQ</button>
+    <button type="button" class="secondary at-preset" data-cmd="AT+CCID">CCID</button>
+    <button type="button" class="secondary at-preset" data-cmd="AT+COPS?">COPS?</button>
+  </div>
+  <pre id="atBox">Respuestas AT aparecerán aquí...</pre>
 </section>
 </div>
 <div id="resetModal" class="modal-overlay">
@@ -309,6 +330,26 @@ $('#btnResetConfirm').onclick=async()=>{
   $('#btnResetConfirm').disabled=false;
 };
 
+const atHistory=[];
+async function sendAt(){
+  const cmd=$('#atCmd').value.trim();
+  if(!cmd){toast('Escribe un comando AT');return;}
+  $('#btnSendAt').disabled=true;
+  try{
+    const r=await fetch('/api/gsm/at',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd})});
+    const j=await r.json();
+    if(!j.ok){toast(j.message||'Error AT');return;}
+    const block=`[${new Date().toLocaleTimeString()}] >>> ${j.command}\n${j.response}\n`;
+    atHistory.unshift(block);
+    if(atHistory.length>25) atHistory.pop();
+    $('#atBox').textContent=atHistory.join('\n');
+    refreshLogs();
+  }catch(e){toast('Error al enviar AT')}
+  $('#btnSendAt').disabled=false;
+}
+$('#btnSendAt').onclick=sendAt;
+$('#atCmd').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendAt();}});
+document.querySelectorAll('.at-preset').forEach(b=>b.onclick=()=>{$('#atCmd').value=b.dataset.cmd;sendAt();});
 $('#btnRefreshLogs').onclick=refreshLogs;
 loadConfig();
 pollStatus();

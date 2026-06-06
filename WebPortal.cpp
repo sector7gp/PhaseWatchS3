@@ -73,6 +73,7 @@ void WebPortal::init() {
     server.on("/api/save", HTTP_POST, handleSaveConfig);
     server.on("/api/test", HTTP_POST, handleTest);
     server.on("/api/gsm/retry", HTTP_POST, handleGsmRetry);
+    server.on("/api/gsm/at", HTTP_POST, handleGsmAt);
     server.on("/api/reset", HTTP_POST, handleFactoryReset);
     server.on("/save", HTTP_POST, handleSaveConfig);
     server.on("/test", HTTP_POST, handleTest);
@@ -226,6 +227,39 @@ void WebPortal::handleSaveConfig() {
 void WebPortal::handleTest() {
     ConnectionManager::sendTestNotification();
     server.send(200, "application/json", "{\"ok\":true,\"message\":\"Notificacion de prueba enviada\"}");
+}
+
+void WebPortal::handleGsmAt() {
+    String cmd = server.arg("cmd");
+
+    if (cmd.length() == 0 && server.hasArg("plain")) {
+        String body = server.arg("plain");
+        int key = body.indexOf("\"cmd\"");
+        if (key >= 0) {
+            int q1 = body.indexOf('"', body.indexOf(':', key) + 1);
+            int q2 = body.indexOf('"', q1 + 1);
+            if (q1 >= 0 && q2 > q1) {
+                cmd = body.substring(q1 + 1, q2);
+            }
+        }
+    }
+
+    cmd.trim();
+    if (cmd.length() == 0) {
+        server.send(400, "application/json", "{\"ok\":false,\"message\":\"Falta comando AT\"}");
+        return;
+    }
+
+    String sent = cmd;
+    sent.toUpperCase();
+    if (!sent.startsWith("AT")) {
+        sent = sent.startsWith("+") ? "AT" + sent : "AT+" + sent;
+    }
+
+    String response = ConnectionManager::sendAtCommand(cmd.c_str());
+    String body = "{\"ok\":true,\"command\":\"" + jsonEscape(sent) +
+                  "\",\"response\":\"" + jsonEscape(response) + "\"}";
+    server.send(200, "application/json", body);
 }
 
 void WebPortal::handleGsmRetry() {

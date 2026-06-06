@@ -39,7 +39,7 @@ void setup() {
     // Arduino 3.x ya inicializa TWDT — reconfigurar sin llamar init (evita log de error)
     esp_task_wdt_config_t wdt_config = {
         .timeout_ms = WDT_TIMEOUT_MS,
-        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+        .idle_core_mask = 0,
         .trigger_panic = true
     };
     if (esp_task_wdt_reconfigure(&wdt_config) != ESP_OK) {

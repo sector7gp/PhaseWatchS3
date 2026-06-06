@@ -40,7 +40,7 @@
 #define PIN_GSM_TX 43   // Pin TX → SIM800 RX (divisor 3.3V→2.8V si hace falta)
 #define GSM_UART_PORT 0
 #define GSM_BAUD_RATE 9600
-#define GSM_DEBUG_AT 1  // 1 = eco AT en monitor USB @115200
+#define GSM_DEBUG_AT 0  // 1 = eco TinyGSM en USB (desactivado; usar consola AT del portal)
 
 // --- CONFIGURATION LIMITS ---
 #define MAX_PHONE_NUMBERS 3
