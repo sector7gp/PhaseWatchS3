@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_task_wdt.h>
 
 #include "Config.h"
@@ -18,14 +19,38 @@ void setLED(bool r, bool g, bool b) {
     digitalWrite(PIN_LED_B, b ? HIGH : LOW);
 }
 
-void setup() {
-    Serial.begin(115200);
-    // HW-CDC: esperar enumeracion USB (max 3s, no bloquea si ya conectado)
-    uint32_t usbWaitStart = millis();
-    while (!Serial && (millis() - usbWaitStart < 3000)) {
-        delay(10);
+void logPeriodicUsbStatus() {
+#if USB_STATUS_INTERVAL_MS > 0
+    static unsigned long lastStatus = 0;
+    if (millis() - lastStatus < USB_STATUS_INTERVAL_MS) return;
+    lastStatus = millis();
+
+    String status = "Status: ";
+    if (WebPortal::isAPMode()) {
+        status += "modo=AP";
+    } else if (WiFi.status() == WL_CONNECTED) {
+        status += "WiFi=OK IP=" + WiFi.localIP().toString();
+    } else {
+        status += "WiFi=--";
     }
-    delay(200);
+    status += ConnectionManager::isMqttConnected() ? " MQTT=OK" : " MQTT=--";
+    status += ConnectionManager::isGsmDetected() ? " GSM=OK" : " GSM=--";
+    Logger::info(status.c_str());
+#endif
+}
+
+void setup() {
+    // Inicializa HWCDC/USB-JTAG (necesario para upload y FIFO USB)
+    Serial.begin(115200);
+    delay(300);
+#if DEBUG_UART_HEADER
+    Serial0.begin(DEBUG_BAUD_RATE, SERIAL_8N1, PIN_DEBUG_RX, PIN_DEBUG_TX);
+#endif
+
+    // Evita auto-reconnect NVS y carrera WiFi (error 12308) antes de setup
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
     
     // Config LEDs
     pinMode(PIN_LED_R, OUTPUT);
@@ -64,6 +89,7 @@ void setup() {
 
 void loop() {
     esp_task_wdt_reset(); // Feed WDT
+    Logger::pollUsbReplay();
     
     PhaseMonitor::update();
     WebPortal::update();
@@ -72,6 +98,7 @@ void loop() {
     
     handlePhaseEvents();
     updateIndicators();
+    logPeriodicUsbStatus();
 }
 
 void handlePhaseEvents() {

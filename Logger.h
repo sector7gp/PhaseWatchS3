@@ -15,8 +15,12 @@ public:
     // Returns the full log as a single string (HTML formatted or plain text)
     static String getLogs();
     static void clearLogs();
+    static void replayToSerial();
+    static void pollUsbReplay();
 
 private:
+    static bool usbReplayDone;
+    static void setupUsbReplay();
     static std::vector<String> logLines;
     static const size_t MAX_LOG_LINES = 50;
 };

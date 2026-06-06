@@ -1,10 +1,24 @@
 # PhaseWatchS3
 
-**Versión:** v0.4
+**Versión:** v0.5
 
 Sistema de monitoreo de fases (L1, L2, L3) para ESP32-S3 con doble conectividad (Wi-Fi y GPRS), notificaciones MQTT y alertas por SMS.
 
 ## Changelog
+
+### v0.5
+
+Pinout GSM, consola USB y estabilidad de arranque:
+
+- **GSM en UART1 (GP7/GP8):** el SIM800L se cablea a GPIO 7 (TX) y GPIO 8 (RX), liberando los pines **TX/RX del header** (GPIO 43/44).
+- **Debug USB-C fiable:** el `Logger` escribe directo al FIFO USB-Serial/JTAG; visible en `/dev/cu.usbmodem*` con `screen` o `arduino-cli monitor` sin depender de `Serial.println()` ni de que el host declare la conexión CDC.
+- **Debug opcional en header:** `Serial0` en GPIO 43/44 @115200 para adaptador USB-TTL externo (`DEBUG_UART_HEADER=1` en `Config.h`).
+- **Heartbeat en consola:** línea de estado cada 30 s (`WiFi`, `MQTT`, `GSM`) — configurable con `USB_STATUS_INTERVAL_MS`.
+- **Replay de logs:** al conectar el monitor USB, se reimprime el buffer acumulado.
+- **NVS robusto:** lectura con buffers fijos, sin errores `nvs_get_str len fail`, detección de config corrupta y fix del bug `("phone"+String(i)).c_str()`.
+- **WiFi sin carrera 12308:** transiciones ordenadas `OFF → STA/AP`, sin `WiFi.disconnect(true)` ni `softAPdisconnect(true)` agresivos; WiFi apagado al inicio de `setup()`.
+
+> **Recablear el SIM800L:** TX del módulo → **GP8**, RX del módulo → **GP7** (ya no va a los pines TX/RX del borde).
 
 ### v0.4
 
@@ -23,7 +37,7 @@ Estabilidad GSM y herramientas de depuración:
 Corrección de pinout y estabilidad para **ESP32-S3 SuperMini**:
 
 - **Pinout SuperMini documentado** en `Config.h`: mapa completo del header accesible (TX/RX, GP1–GP13).
-- **GSM en UART0** (pines **TX/RX** del header, GPIO 43/44) en lugar de GPIO 18/19 — que no salen al header y GPIO 19/20 son USB interno.
+- **GSM en UART0** (pines TX/RX del header) en lugar de GPIO 18/19 — superseded en **v0.5** por UART1 en GP7/GP8.
 - **LEDs reasignados** a GP1/GP2/GP3 (GPIO 1/2/3), accesibles en el borde de la placa.
 - **USB CDC estable:** compilación con `USBMode=hwcdc` + `CDCOnBoot=cdc`; debug por USB-C, GSM por pines TX/RX.
 - **Fix watchdog:** `esp_task_wdt_reconfigure()` sin doble init; bootstrap GSM/WiFi no bloqueante con `feedWdt()`.
@@ -210,21 +224,31 @@ Luego ejecutar de nuevo el comando `write_flash`.
 
 ### Monitor serial
 
-Con **USB CDC On Boot** habilitado, el puerto de carga es también el de depuración (115200 baud):
+Con **USB CDC On Boot** habilitado, el cable USB-C expone el puerto `/dev/cu.usbmodem*` (macOS) o `COM*` (Windows). Baudios: **115200** (el USB-JTAG ignora el baud rate, pero el monitor lo pide igual).
 
 ```bash
 # arduino-cli
 arduino-cli monitor -p /dev/cu.usbmodem101 -c baudrate=115200
 
-# o con screen (macOS/Linux)
+# o con screen (macOS/Linux) — salir: Ctrl-A, K, Y
 screen /dev/cu.usbmodem101 115200
 ```
+
+**Importante:**
+
+- Usar el puerto **usbmodem** del cable USB-C, no un adaptador en los pines TX/RX del header (esos son UART0 opcional).
+- Solo un programa puede abrir el puerto a la vez (cerrar `screen`/IDE antes de flashear).
+- Tras abrir el monitor, pulsar **RST** en la placa para ver el arranque completo.
 
 Al arrancar debería verse:
 
 ```
-[INFO]: Booting PhaseWatch S3...
+[0s] INFO: Booting PhaseWatch S3...
+[0s] INFO: Setup complete.
+[30s] INFO: Status: WiFi=OK IP=192.168.x.x MQTT=OK GSM=--
 ```
+
+**Debug alternativo (adaptador USB-TTL):** conectar al header TX/RX (GPIO 43/44) @115200 — misma salida que USB-C si `DEBUG_UART_HEADER=1`.
 
 ### Primera configuración
 
@@ -269,15 +293,18 @@ Referencia completa en `Config.h`. Resumen del header:
 
 | Pin placa | GPIO | Uso |
 |-----------|------|-----|
-| TX | 43 | → SIM800 RX |
-| RX | 44 | ← SIM800 TX |
+| TX | 43 | Debug UART0 TX → adaptador USB-TTL RX |
+| RX | 44 | Debug UART0 RX ← adaptador USB-TTL TX |
 | GP1 | 1 | LED rojo |
 | GP2 | 2 | LED verde |
 | GP3 | 3 | LED azul |
 | GP4 | 4 | Fase L1 |
 | GP5 | 5 | Fase L2 |
 | GP6 | 6 | Fase L3 |
-| GP7–GP13 | 7–13 | Libre |
+| GP7 | 7 | GSM TX → SIM800 RX |
+| GP8 | 8 | GSM RX ← SIM800 TX |
+| GP9–GP13 | 9–13 | Libre |
+| USB-C | — | Debug + programación (`/dev/cu.usbmodem*`) |
 | Onboard LED | 48 | No usado por el firmware |
 
 ### Entradas de Fase (Aisladas)
@@ -289,10 +316,10 @@ Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de r
 ### Módulo Celular (SIM800L)
 *   **VCC:** Fuente externa (3.7V - 4.2V, 2A). El ESP32 no provee corriente suficiente.
 *   **GND:** Común con ESP32 y fuente.
-*   **SIM800L TX** → **Pin RX** del ESP (GPIO 44). El ESP lee bien 2.8V del SIM800.
-*   **SIM800L RX** → **Pin TX** del ESP (GPIO 43). Usar divisor 3.3V→2.8V si hace falta.
-*   Son los pines **TX/RX impresos en el borde izquierdo** de la SuperMini (UART0).
-*   Con **USB CDC On Boot = Enabled**, el monitor USB no compite con esos pines.
+*   **SIM800L TX** → **GP8** (GPIO 8, UART1 RX del ESP).
+*   **SIM800L RX** → **GP7** (GPIO 7, UART1 TX del ESP). Usar divisor 3.3V→2.8V si hace falta.
+*   **No cablear el GSM a los pines TX/RX del header** (GPIO 43/44) — desde v0.5 son solo para debug opcional con adaptador USB-TTL.
+*   **Debug por USB-C:** cable al puerto nativo de la placa (`/dev/cu.usbmodem*`), no requiere los pines TX/RX.
 *   **No usar GPIO 18/19/20** — no están en el header o son USB interno.
     *   *Nota Divisor de Tensión:* El SIM800L tiene nivel lógico de 2.8V. La señal TX del ESP32 (3.3V) podría requerir un divisor resistivo simple (Ej: 10k en serie, 20k a GND) para no dañar el pin RX del SIM800L si la placa no trae adaptación de niveles.
 

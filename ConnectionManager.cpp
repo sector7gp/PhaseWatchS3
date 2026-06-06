@@ -212,6 +212,29 @@ String ConnectionManager::getDeviceId() {
     return String(buf);
 }
 
+void ConnectionManager::prepareWiFiOff() {
+    WiFi.persistent(false);
+    if (WiFi.getMode() == WIFI_OFF) return;
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+}
+
+void ConnectionManager::prepareWiFiSta() {
+    WiFi.persistent(false);
+    if (WiFi.getMode() == WIFI_STA) return;
+    prepareWiFiOff();
+    WiFi.mode(WIFI_STA);
+    delay(200);
+}
+
+void ConnectionManager::prepareWiFiAp() {
+    WiFi.persistent(false);
+    if (WiFi.getMode() == WIFI_AP) return;
+    prepareWiFiOff();
+    WiFi.mode(WIFI_AP);
+    delay(200);
+}
+
 void ConnectionManager::initGsmSerial() {
     if (gsmSerialStarted) return;
 
@@ -494,7 +517,7 @@ void ConnectionManager::processBootstrap() {
 void ConnectionManager::startWiFiConnection() {
     Logger::info("Connecting to WiFi...");
     disconnectMQTT();
-    WiFi.mode(WIFI_STA);
+    prepareWiFiSta();
     WiFi.begin(StorageManager::config.wifiSSID, StorageManager::config.wifiPass);
     wifiConnectPending = true;
     wifiConnectStartTime = millis();
@@ -629,7 +652,7 @@ void ConnectionManager::maintainConnection() {
         Logger::info("WiFi restored. Switching back...");
         disconnectMQTT();
         modem.gprsDisconnect();
-        WiFi.mode(WIFI_STA);
+        prepareWiFiSta();
         currentNetwork = NET_WIFI;
         mqtt = &mqttWiFi;
         mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);

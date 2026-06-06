@@ -36,6 +36,10 @@ public:
     static String getGsmDebugInfo();
     static String sendAtCommand(const char* cmd);
 
+    static void prepareWiFiOff();
+    static void prepareWiFiSta();
+    static void prepareWiFiAp();
+
 private:
     friend class GsmUartGuard;
 

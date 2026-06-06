@@ -8,21 +8,23 @@
 //
 //  IZQUIERDA (arriba→abajo)     DERECHA (arriba→abajo)
 //  ─────────────────────────    ─────────────────────
-//  TX    GPIO43  → SIM800 RX     5V
-//  RX    GPIO44  ← SIM800 TX     GND
+//  TX    GPIO43  → adaptador RX  5V
+//  RX    GPIO44  ← adaptador TX  GND
 //  GP1   LED Rojo                3V3
 //  GP2   LED Verde               GP13
 //  GP3   LED Azul                GP12
 //  GP4   Fase L1                 GP11
 //  GP5   Fase L2                 GP10
 //  GP6   Fase L3                 GP9
-//  GP7   (libre)                 GP8  (libre)
+//  GP7   GSM TX → SIM800 RX      GP8  GSM RX ← SIM800 TX
 //
 //  Onboard: LED azul en GPIO48 (no usado por este firmware)
 //  NO USAR: GPIO18, GPIO19, GPIO20 (no en header / USB interno)
 //
-//  Debug USB: cable USB-C @115200 (CDC On Boot = Enabled)
-//  GSM:       pines TX/RX del header @9600 (UART0)
+//  Debug USB-C:  /dev/cu.usbmodem* @115200 (USB-Serial/JTAG interno)
+//  Debug header: Serial0 UART0 en TX/RX (GPIO43/44) @115200 — adaptador USB-TTL
+//  GSM:          UART1 en GP7/GP8 @9600
+//  NOTA: esp_log interno va a UART0; nuestro Logger usa USB-JTAG directo.
 // =============================================================================
 
 // --- Fases (optoacopladores → GND cuando hay tensión) ---
@@ -35,12 +37,19 @@
 #define PIN_LED_G 2     // GP2 — verde: fases OK + MQTT conectado
 #define PIN_LED_B 3     // GP3 — azul: modo AP / configuración
 
-// --- SIM800L (UART0 = pines TX/RX del header) ---
-#define PIN_GSM_RX 44   // Pin RX ← SIM800 TX
-#define PIN_GSM_TX 43   // Pin TX → SIM800 RX (divisor 3.3V→2.8V si hace falta)
-#define GSM_UART_PORT 0
+// --- Consola debug en header TX/RX (UART0) ---
+#define PIN_DEBUG_RX 44   // Header RX ← adaptador USB-TTL TX
+#define PIN_DEBUG_TX 43   // Header TX → adaptador USB-TTL RX
+#define DEBUG_UART_HEADER 1
+#define DEBUG_BAUD_RATE 115200
+
+// --- SIM800L (UART1 en GP7/GP8 — libera TX/RX del header) ---
+#define PIN_GSM_RX 8    // GP8 ← SIM800 TX
+#define PIN_GSM_TX 7    // GP7 → SIM800 RX (divisor 3.3V→2.8V si hace falta)
+#define GSM_UART_PORT 1
 #define GSM_BAUD_RATE 9600
 #define GSM_DEBUG_AT 0  // 1 = eco TinyGSM en USB (desactivado; usar consola AT del portal)
+#define USB_STATUS_INTERVAL_MS 30000  // heartbeat en consola USB (0 = desactivado)
 
 // --- CONFIGURATION LIMITS ---
 #define MAX_PHONE_NUMBERS 3

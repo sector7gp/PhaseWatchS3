@@ -41,7 +41,7 @@ void WebPortal::init() {
         apMode = true;
         Logger::info("Starting in AP Mode...");
 
-        WiFi.mode(WIFI_AP);
+        ConnectionManager::prepareWiFiAp();
         WiFi.softAPConfig(
             IPAddress(192, 168, 4, 1),
             IPAddress(192, 168, 4, 1),
@@ -60,10 +60,7 @@ void WebPortal::init() {
         apMode = false;
         Logger::info("Starting in Station Mode Web Server...");
         // WebServer requiere stack WiFi inicializado (evita assert xQueueSemaphoreTake)
-        WiFi.persistent(false);
-        WiFi.mode(WIFI_STA);
-        WiFi.disconnect(true);
-        delay(100);
+        ConnectionManager::prepareWiFiSta();
     }
 
     server.on("/", handleRoot);
@@ -206,10 +203,8 @@ void WebPortal::prepareRestart() {
     server.stop();
     if (apMode) {
         dnsServer.stop();
-        WiFi.softAPdisconnect(true);
     }
-    WiFi.mode(WIFI_OFF);
-    delay(200);
+    ConnectionManager::prepareWiFiOff();
 }
 
 void WebPortal::handleSaveConfig() {
