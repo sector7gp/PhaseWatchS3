@@ -15,6 +15,7 @@ private:
     static void handleApiConfig();
     static void handleSaveConfig();
     static void handleTest();
+    static void handleGsmRetry();
     static void handleFactoryReset();
     static void handleNotFound();
     static void prepareRestart();

@@ -6,6 +6,7 @@
 #include "StorageManager.h"
 #include "PhaseMonitor.h"
 #include "ConnectionManager.h"
+#include "NetworkServices.h"
 #include "Logger.h"
 
 WebServer server(80);
@@ -58,6 +59,11 @@ void WebPortal::init() {
     } else {
         apMode = false;
         Logger::info("Starting in Station Mode Web Server...");
+        // WebServer requiere stack WiFi inicializado (evita assert xQueueSemaphoreTake)
+        WiFi.persistent(false);
+        WiFi.mode(WIFI_STA);
+        WiFi.disconnect(true);
+        delay(100);
     }
 
     server.on("/", handleRoot);
@@ -66,6 +72,7 @@ void WebPortal::init() {
     server.on("/api/config", HTTP_GET, handleApiConfig);
     server.on("/api/save", HTTP_POST, handleSaveConfig);
     server.on("/api/test", HTTP_POST, handleTest);
+    server.on("/api/gsm/retry", HTTP_POST, handleGsmRetry);
     server.on("/api/reset", HTTP_POST, handleFactoryReset);
     server.on("/save", HTTP_POST, handleSaveConfig);
     server.on("/test", HTTP_POST, handleTest);
@@ -116,9 +123,14 @@ void WebPortal::handleApiStatus() {
     json += "\"gsm_detected\":" + String(ConnectionManager::isGsmDetected() ? "true" : "false") + ",";
     json += "\"gsm_registered\":" + String(ConnectionManager::isGsmRegistered() ? "true" : "false") + ",";
     json += "\"gsm_signal\":" + String(ConnectionManager::getGsmSignal()) + ",";
+    json += "\"gsm_debug\":\"" + jsonEscape(ConnectionManager::getGsmDebugInfo()) + "\",";
     json += "\"battery_available\":" + String(battOk ? "true" : "false") + ",";
     json += "\"battery_mv\":" + String(battMv) + ",";
     json += "\"battery_pct\":" + String(battPct) + ",";
+    json += "\"mdns_active\":" + String(NetworkServices::isMdnsActive() ? "true" : "false") + ",";
+    json += "\"mdns_hostname\":\"" + jsonEscape(NetworkServices::getMdnsHostname()) + "\",";
+    json += "\"mdns_fqdn\":\"" + jsonEscape(NetworkServices::getMdnsFqdn()) + "\",";
+    json += "\"ota_active\":" + String(NetworkServices::isOtaActive() ? "true" : "false") + ",";
     json += "\"mqtt_topics\":{";
     json += "\"base\":\"" + ConnectionManager::getMqttTopicBase() + "\",";
     json += "\"status\":\"" + ConnectionManager::getMqttTopicStatus() + "\",";
@@ -140,6 +152,8 @@ void WebPortal::handleApiConfig() {
     json += "\"mqttHost\":\"" + jsonEscape(String(StorageManager::config.mqttHost)) + "\",";
     json += "\"mqttPort\":" + String(StorageManager::config.mqttPort) + ",";
     json += "\"mqttUser\":\"" + jsonEscape(String(StorageManager::config.mqttUser)) + "\",";
+    json += "\"hostname\":\"" + jsonEscape(String(StorageManager::config.hostname)) + "\",";
+    json += "\"configured\":" + String(StorageManager::config.configured ? "true" : "false") + ",";
     json += "\"phones\":[";
     for (int i = 0; i < MAX_PHONE_NUMBERS; i++) {
         if (i > 0) json += ",";
@@ -166,9 +180,28 @@ void WebPortal::applyConfigFromRequest() {
     if (server.hasArg("phone0")) safeStrCopy(StorageManager::config.phones[0], MAX_PHONE_LEN, server.arg("phone0").c_str());
     if (server.hasArg("phone1")) safeStrCopy(StorageManager::config.phones[1], MAX_PHONE_LEN, server.arg("phone1").c_str());
     if (server.hasArg("phone2")) safeStrCopy(StorageManager::config.phones[2], MAX_PHONE_LEN, server.arg("phone2").c_str());
+
+    if (server.hasArg("hostname")) {
+        String host = server.arg("hostname");
+        host.trim();
+        if (host.length() == 0) {
+            safeStrCopy(StorageManager::config.hostname, MAX_HOSTNAME_LEN, DEFAULT_HOSTNAME);
+        } else {
+            safeStrCopy(StorageManager::config.hostname, MAX_HOSTNAME_LEN, host.c_str());
+        }
+    } else if (!StorageManager::config.configured) {
+        safeStrCopy(StorageManager::config.hostname, MAX_HOSTNAME_LEN, DEFAULT_HOSTNAME);
+    }
+
+    if (server.hasArg("otaPass") && server.arg("otaPass").length() > 0) {
+        safeStrCopy(StorageManager::config.otaPass, MAX_OTA_PASS_LEN, server.arg("otaPass").c_str());
+    } else if (!StorageManager::config.configured) {
+        safeStrCopy(StorageManager::config.otaPass, MAX_OTA_PASS_LEN, DEFAULT_OTA_PASS);
+    }
 }
 
 void WebPortal::prepareRestart() {
+    NetworkServices::stop();
     server.stop();
     if (apMode) {
         dnsServer.stop();
@@ -193,6 +226,20 @@ void WebPortal::handleSaveConfig() {
 void WebPortal::handleTest() {
     ConnectionManager::sendTestNotification();
     server.send(200, "application/json", "{\"ok\":true,\"message\":\"Notificacion de prueba enviada\"}");
+}
+
+void WebPortal::handleGsmRetry() {
+    bool detected = ConnectionManager::retryGsmConnection();
+    String body = "{\"ok\":" + String(detected ? "true" : "false") +
+                  ",\"detected\":" + String(ConnectionManager::isGsmDetected() ? "true" : "false") +
+                  ",\"registered\":" + String(ConnectionManager::isGsmRegistered() ? "true" : "false") +
+                  ",\"debug\":\"" + jsonEscape(ConnectionManager::getGsmDebugInfo()) + "\"";
+    if (detected) {
+        body += ",\"message\":\"Modulo GSM detectado. Ver logs para detalle.\"}";
+    } else {
+        body += ",\"message\":\"No se detecto el SIM800L. Ver logs y cableado.\"}";
+    }
+    server.send(200, "application/json", body);
 }
 
 void WebPortal::handleFactoryReset() {

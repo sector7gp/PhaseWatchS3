@@ -6,6 +6,7 @@
 #include "StorageManager.h"
 #include "PhaseMonitor.h"
 #include "ConnectionManager.h"
+#include "NetworkServices.h"
 #include "WebPortal.h"
 
 unsigned long lastBlinkTime = 0;
@@ -19,7 +20,12 @@ void setLED(bool r, bool g, bool b) {
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
+    // HW-CDC: esperar enumeracion USB (max 3s, no bloquea si ya conectado)
+    uint32_t usbWaitStart = millis();
+    while (!Serial && (millis() - usbWaitStart < 3000)) {
+        delay(10);
+    }
+    delay(200);
     
     // Config LEDs
     pinMode(PIN_LED_R, OUTPUT);
@@ -29,11 +35,22 @@ void setup() {
     
     Logger::init();
     Logger::info("Booting PhaseWatch S3...");
+
+    // Arduino 3.x ya inicializa TWDT — reconfigurar sin llamar init (evita log de error)
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = WDT_TIMEOUT_MS,
+        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+        .trigger_panic = true
+    };
+    if (esp_task_wdt_reconfigure(&wdt_config) != ESP_OK) {
+        esp_task_wdt_init(&wdt_config);
+    }
+    esp_task_wdt_add(NULL);
     
     StorageManager::init();
     PhaseMonitor::init();
+    NetworkServices::init();
 
-    // Con config guardada, red primero; sin config, AP del portal primero
     if (StorageManager::config.configured) {
         ConnectionManager::init();
         WebPortal::init();
@@ -41,15 +58,6 @@ void setup() {
         WebPortal::init();
         ConnectionManager::init();
     }
-    
-    // Init Watchdog Timer
-    esp_task_wdt_config_t wdt_config = {
-        .timeout_ms = WDT_TIMEOUT_MS,
-        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1, // WDT on all cores
-        .trigger_panic = true
-    };
-    esp_task_wdt_init(&wdt_config);
-    esp_task_wdt_add(NULL);
     
     Logger::info("Setup complete.");
 }
@@ -60,6 +68,7 @@ void loop() {
     PhaseMonitor::update();
     WebPortal::update();
     ConnectionManager::update();
+    NetworkServices::update();
     
     handlePhaseEvents();
     updateIndicators();

@@ -32,6 +32,11 @@ void StorageManager::load() {
         String p = preferences.getString(("phone" + String(i)).c_str(), "");
         safeStrCopy(config.phones[i], MAX_PHONE_LEN, p.c_str());
     }
+
+    String hostname = preferences.getString("hostname", DEFAULT_HOSTNAME);
+    String otaPass = preferences.getString("otaPass", DEFAULT_OTA_PASS);
+    safeStrCopy(config.hostname, MAX_HOSTNAME_LEN, hostname.c_str());
+    safeStrCopy(config.otaPass, MAX_OTA_PASS_LEN, otaPass.c_str());
     
     preferences.end();
     Logger::info(config.configured
@@ -55,6 +60,9 @@ void StorageManager::save() {
     for (int i = 0; i < MAX_PHONE_NUMBERS; i++) {
         preferences.putString(("phone" + String(i)).c_str(), config.phones[i]);
     }
+
+    preferences.putString("hostname", config.hostname);
+    preferences.putString("otaPass", config.otaPass);
     
     preferences.end();
     Logger::info("Configuration saved to NVS");

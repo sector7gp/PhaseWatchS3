@@ -5,8 +5,8 @@
 #include <esp_task_wdt.h>
 #include <esp_mac.h>
 
-// Hardware Serial for GSM
-HardwareSerial SerialGSM(1);
+// UART0 en pines TX/RX del header — USB CDC es el debug (Serial)
+HardwareSerial SerialGSM(GSM_UART_PORT);
 TinyGsm modem(SerialGSM);
 TinyGsmClient gsmClient(modem);
 WiFiClient wifiClient;
@@ -25,10 +25,23 @@ unsigned long ConnectionManager::lastGsmProbe = 0;
 unsigned long ConnectionManager::lastBattRead = 0;
 int16_t ConnectionManager::cachedBattMv = -1;
 int8_t ConnectionManager::cachedBattPct = -1;
+bool ConnectionManager::gsmSerialStarted = false;
+String ConnectionManager::gsmDebugInfo = "Sin inicializar";
+ConnectionManager::BootPhase ConnectionManager::bootPhase = ConnectionManager::BOOT_DONE;
+unsigned long ConnectionManager::bootPhaseStart = 0;
 String macStr = "";
 
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 #define RECONNECT_INTERVAL_MS 30000
+#define GSM_PROBE_INTERVAL_MS 30000
+#define GSM_BOOT_DELAY_MS 3000
+
+void ConnectionManager::feedWdt() {
+    esp_err_t err = esp_task_wdt_reset();
+    if (err == ESP_ERR_NOT_FOUND) {
+        esp_task_wdt_add(NULL);
+    }
+}
 
 void ConnectionManager::disconnectMQTT() {
     if (mqtt != nullptr && mqtt->connected()) {
@@ -47,27 +60,180 @@ String ConnectionManager::getDeviceId() {
     return String(buf);
 }
 
+void ConnectionManager::initGsmSerial() {
+    if (gsmSerialStarted) return;
+
+    SerialGSM.begin(GSM_BAUD_RATE, SERIAL_8N1, PIN_GSM_RX, PIN_GSM_TX);
+    gsmSerialStarted = true;
+
+    String uartInfo = "GSM UART" + String(GSM_UART_PORT) +
+                      ": pin RX=GPIO" + String(PIN_GSM_RX) +
+                      " (<- SIM TX), pin TX=GPIO" + String(PIN_GSM_TX) +
+                      " (-> SIM RX), " + String(GSM_BAUD_RATE) + " baud";
+    Logger::info(uartInfo.c_str());
+#if GSM_DEBUG_AT
+    Logger::info("GSM_DEBUG_AT activo: comandos AT visibles en este USB @115200");
+#else
+    Logger::info("AT del SIM800 solo por pines TX/RX del header @9600");
+#endif
+    gsmDebugInfo = uartInfo;
+}
+
+bool ConnectionManager::probeGsmModem(bool verbose) {
+    initGsmSerial();
+    feedWdt();
+
+    while (SerialGSM.available()) {
+        SerialGSM.read();
+    }
+
+    if (verbose) {
+        Logger::info(("GSM: enviando AT via UART" + String(GSM_UART_PORT) +
+                      " (GPIO" + String(PIN_GSM_TX) + " TX)...").c_str());
+    }
+    gsmDebugInfo = "Enviando AT por UART" + String(GSM_UART_PORT) + "...";
+
+    feedWdt();
+    modem.init();
+    feedWdt();
+
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        if (verbose) {
+            Logger::info(("GSM: testAT intento " + String(attempt) + "/3").c_str());
+        }
+        gsmDebugInfo = "testAT intento " + String(attempt) + "/3";
+
+        feedWdt();
+        if (modem.testAT(3000)) {
+            feedWdt();
+            gsmModemReady = true;
+            String info = modem.getModemInfo();
+            gsmDebugInfo = "Detectado: " + info;
+            Logger::info(("GSM detectado — " + info).c_str());
+
+            if (modem.isNetworkConnected()) {
+                Logger::info("GSM: registrado en red celular.");
+            } else {
+                Logger::warn("GSM: modem responde pero sin registro de red.");
+                gsmDebugInfo += " (sin red)";
+            }
+            return true;
+        }
+
+        feedWdt();
+        delay(500);
+        feedWdt();
+    }
+
+    gsmModemReady = false;
+    gsmDebugInfo = "Sin respuesta AT. Cableado: RX(GPIO" + String(PIN_GSM_RX) +
+                   ")<-SIM-TX, TX(GPIO" + String(PIN_GSM_TX) +
+                   ")->SIM-RX, 4V/2A, GND comun";
+    Logger::error("GSM: sin respuesta AT tras 3 intentos.");
+    return false;
+}
+
+bool ConnectionManager::retryGsmConnection() {
+    Logger::warn("GSM: reintento manual iniciado.");
+    feedWdt();
+
+    gsmModemReady = false;
+    gsmDebugInfo = "Reiniciando UART GSM...";
+
+    if (gsmSerialStarted) {
+        SerialGSM.end();
+        gsmSerialStarted = false;
+        delay(200);
+        feedWdt();
+    }
+
+    gsmDebugInfo = "Esperando arranque SIM800 (3s)...";
+    delay(GSM_BOOT_DELAY_MS);
+    feedWdt();
+
+    bool detected = probeGsmModem(true);
+    lastGsmProbe = millis();
+
+    if (!detected) {
+        return false;
+    }
+
+    Logger::info("GSM: esperando registro en red (15s)...");
+    gsmDebugInfo = "Modem OK. Buscando red celular...";
+    feedWdt();
+
+    if (modem.waitForNetwork(15000)) {
+        feedWdt();
+        Logger::info("GSM: red celular disponible.");
+        gsmDebugInfo = "Modem OK. Red celular registrada.";
+        return true;
+    }
+
+    feedWdt();
+    Logger::warn("GSM: modem detectado pero sin registro de red.");
+    gsmDebugInfo = "Modem OK pero sin registro de red (SIM/antena/senal)";
+    return true;
+}
+
+String ConnectionManager::getGsmDebugInfo() {
+    return gsmDebugInfo;
+}
+
 void ConnectionManager::init() {
     if (!StorageManager::config.configured) {
         Logger::info("Network init skipped (AP configuration mode).");
+        bootPhase = BOOT_DONE;
         return;
     }
 
     macStr = getDeviceId();
-    
-    SerialGSM.begin(GSM_BAUD_RATE, SERIAL_8N1, PIN_GSM_RX, PIN_GSM_TX);
-    Logger::info("Initializing Modem...");
-    modem.init();
-    gsmModemReady = modem.testAT(2000);
-    lastGsmProbe = millis();
+    // UART GSM se abre en processBootstrap (da tiempo a enumerar USB CDC)
 
-    if (gsmModemReady) {
-        Logger::info("GSM modem detected.");
-    } else {
-        Logger::warn("GSM modem not detected.");
+    bootPhase = BOOT_WAIT_GSM;
+    bootPhaseStart = millis();
+    gsmDebugInfo = "Esperando arranque SIM800 (3s)...";
+    Logger::info("Bootstrap red/GSM diferido al loop (no bloquea setup).");
+}
+
+void ConnectionManager::processBootstrap() {
+    feedWdt();
+
+    switch (bootPhase) {
+        case BOOT_WAIT_GSM:
+            if (millis() - bootPhaseStart < GSM_BOOT_DELAY_MS) return;
+            bootPhase = BOOT_PROBE_GSM;
+            bootPhaseStart = millis();
+            probeGsmModem(true);
+            lastGsmProbe = millis();
+            bootPhase = BOOT_WIFI;
+            bootPhaseStart = millis();
+            startWiFiConnection();
+            Logger::info("Bootstrap: WiFi en progreso...");
+            return;
+
+        case BOOT_WIFI:
+            feedWdt();
+            if (WiFi.status() == WL_CONNECTED) {
+                wifiConnectPending = false;
+                currentNetwork = NET_WIFI;
+                mqtt = &mqttWiFi;
+                mqtt->setServer(StorageManager::config.mqttHost, StorageManager::config.mqttPort);
+                bootPhase = BOOT_DONE;
+                Logger::info("Bootstrap completo: WiFi conectado.");
+                return;
+            }
+            if (millis() - bootPhaseStart > WIFI_CONNECT_TIMEOUT_MS) {
+                Logger::warn("Bootstrap: WiFi timeout, probando GPRS...");
+                wifiConnectPending = false;
+                connectGSM();
+                bootPhase = BOOT_DONE;
+            }
+            return;
+
+        case BOOT_DONE:
+        default:
+            return;
     }
-    
-    connectWiFiBlocking();
 }
 
 void ConnectionManager::startWiFiConnection() {
@@ -104,7 +270,7 @@ void ConnectionManager::connectWiFiBlocking() {
     int retries = 0;
     while (WiFi.status() != WL_CONNECTED && retries < 15) {
         delay(500);
-        esp_task_wdt_reset();
+        feedWdt();
         retries++;
     }
 
@@ -121,27 +287,43 @@ void ConnectionManager::connectWiFiBlocking() {
 
 void ConnectionManager::connectGSM() {
     disconnectMQTT();
+    feedWdt();
+
+    if (!gsmModemReady) {
+        Logger::warn("GSM: modem no detectado, reintentando antes de GPRS...");
+        if (!probeGsmModem(true)) {
+            currentNetwork = NET_NONE;
+            return;
+        }
+        lastGsmProbe = millis();
+    }
 
     Logger::info("Connecting to GSM network...");
+    feedWdt();
     if (!modem.waitForNetwork(10000)) {
+        feedWdt();
         Logger::error("GSM Network failed.");
         currentNetwork = NET_NONE;
         return;
     }
-    
+
+    feedWdt();
     if (!modem.isNetworkConnected()) {
         Logger::error("GSM not registered.");
         currentNetwork = NET_NONE;
         return;
     }
-    
+
     Logger::info("Connecting to GPRS...");
+    feedWdt();
     if (!modem.gprsConnect("internet", "", "")) {
+        feedWdt();
         Logger::error("GPRS Failed.");
         currentNetwork = NET_NONE;
         return;
     }
-    
+
+    feedWdt();
     Logger::info("GPRS Connected.");
     currentNetwork = NET_GSM;
     mqtt = &mqttGSM;
@@ -151,14 +333,37 @@ void ConnectionManager::connectGSM() {
 void ConnectionManager::update() {
     if (!StorageManager::config.configured) return;
 
-    if (gsmModemReady && millis() - lastGsmProbe > 30000) {
-        gsmModemReady = modem.testAT(1000);
-        lastGsmProbe = millis();
+    if (bootPhase != BOOT_DONE) {
+        processBootstrap();
+        return;
     }
-    
+
+    if (millis() - lastGsmProbe > GSM_PROBE_INTERVAL_MS) {
+        lastGsmProbe = millis();
+        if (gsmModemReady) {
+            feedWdt();
+            gsmModemReady = modem.testAT(1000);
+            if (!gsmModemReady) {
+                Logger::warn("GSM: modem dejo de responder.");
+                gsmDebugInfo = "Modem dejo de responder AT";
+            }
+        } else {
+            Logger::info("GSM: reintento automatico (testAT rapido)...");
+            initGsmSerial();
+            feedWdt();
+            if (modem.testAT(2000)) {
+                gsmModemReady = true;
+                gsmDebugInfo = "Detectado en reintento: " + modem.getModemInfo();
+                Logger::info(("GSM: detectado en reintento — " + gsmDebugInfo).c_str());
+            } else {
+                gsmDebugInfo = "Sin respuesta AT (auto-retry)";
+            }
+        }
+    }
+
     maintainConnection();
     maintainMQTT();
-    
+
     if (millis() - lastHeartbeatTime > MQTT_KEEPALIVE_MS) {
         publishHeartbeat();
         lastHeartbeatTime = millis();
@@ -194,15 +399,15 @@ void ConnectionManager::maintainConnection() {
 
 void ConnectionManager::maintainMQTT() {
     if (currentNetwork == NET_NONE || mqtt == nullptr) return;
-    
+
     if (!mqtt->connected()) {
         Logger::info("Connecting to MQTT...");
         String clientId = "PhaseWatch-" + macStr;
         String lwtTopic = "phasewatch/" + macStr + "/lwt";
-        
-        if (mqtt->connect(clientId.c_str(), 
-                          StorageManager::config.mqttUser, 
-                          StorageManager::config.mqttPass, 
+
+        if (mqtt->connect(clientId.c_str(),
+                          StorageManager::config.mqttUser,
+                          StorageManager::config.mqttPass,
                           lwtTopic.c_str(), 0, true, "{\"status\":\"offline\"}")) {
             Logger::info("MQTT Connected.");
             mqtt->publish(lwtTopic.c_str(), "{\"status\":\"online\"}", true);
@@ -220,9 +425,9 @@ String ConnectionManager::generateJsonPayload(const char* msgType, const char* e
     if (c == CRIT_NORMAL) crit = "NORMAL";
     else if (c == CRIT_PARTIAL_FAIL) crit = "PARTIAL_FAIL";
     else crit = "TOTAL_FAIL";
-    
+
     String net = (currentNetwork == NET_WIFI) ? "WIFI" : ((currentNetwork == NET_GSM) ? "GPRS" : "NONE");
-    
+
     String json = "{";
     json += "\"type\":\"" + String(msgType) + "\",";
     if (event != nullptr) json += "\"event\":\"" + String(event) + "\",";
@@ -245,7 +450,7 @@ void ConnectionManager::publishEvent(const char* eventType, const char* message)
         mqtt->publish(topic.c_str(), payload.c_str());
         Logger::info(("MQTT Published: " + payload).c_str());
     }
-    
+
     if (String(eventType) == "PHASE_LOST" || String(eventType) == "PHASE_RESTORED" || String(eventType) == "TEST") {
         sendSMS(message);
     }
@@ -329,6 +534,7 @@ bool ConnectionManager::getBatteryStatus(int16_t& milliVolts, int8_t& percent) {
 
     int8_t chargeState = 0;
     int16_t mv = 0;
+    feedWdt();
     if (modem.getBattStats(chargeState, percent, mv) && mv > 0) {
         cachedBattMv = mv;
         cachedBattPct = percent;

@@ -1,10 +1,24 @@
 # PhaseWatchS3
 
-**Versión:** v0.2
+**Versión:** v0.3
 
 Sistema de monitoreo de fases (L1, L2, L3) para ESP32-S3 con doble conectividad (Wi-Fi y GPRS), notificaciones MQTT y alertas por SMS.
 
 ## Changelog
+
+### v0.3
+
+Corrección de pinout y estabilidad para **ESP32-S3 SuperMini**:
+
+- **Pinout SuperMini documentado** en `Config.h`: mapa completo del header accesible (TX/RX, GP1–GP13).
+- **GSM en UART0** (pines **TX/RX** del header, GPIO 43/44) en lugar de GPIO 18/19 — que no salen al header y GPIO 19/20 son USB interno.
+- **LEDs reasignados** a GP1/GP2/GP3 (GPIO 1/2/3), accesibles en el borde de la placa.
+- **USB CDC estable:** compilación con `USBMode=hwcdc` + `CDCOnBoot=cdc`; debug por USB-C, GSM por pines TX/RX.
+- **Fix watchdog:** `esp_task_wdt_reconfigure()` sin doble init; bootstrap GSM/WiFi no bloqueante con `feedWdt()`.
+- **Fix crash post-config:** `WiFi.mode(WIFI_STA)` antes de `server.begin()` en modo estación.
+- **GSM debug:** `GSM_DEBUG_AT`, probe automático cada 30 s, API `POST /api/gsm/retry`, campo `gsm_debug` en `/api/status`.
+- **mDNS y OTA:** `NetworkServices` con hostname configurable (`phase.local` por defecto) y password OTA (`Phase123`).
+- **Portal web:** botón reintentar GSM, reset de fábrica con modal en pestaña Configuración, campos mDNS/OTA.
 
 ### v0.2
 
@@ -51,6 +65,7 @@ En **Herramientas**, seleccionar:
 | Opción | Valor |
 |--------|-------|
 | Placa | `ESP32S3 Dev Module` |
+| USB Mode | `Hardware CDC and JTAG` |
 | USB CDC On Boot | `Enabled` |
 | CPU Frequency | `240 MHz` |
 | Flash Size | `4MB (32Mb)` |
@@ -98,7 +113,7 @@ arduino-cli core install esp32:esp32
 arduino-cli lib install "PubSubClient" "TinyGSM"
 
 arduino-cli compile \
-  --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,FlashMode=qio,PartitionScheme=default \
+  --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=4M,FlashMode=qio,PartitionScheme=default \
   --output-dir build \
   PhaseWatchS3/
 ```
@@ -233,7 +248,22 @@ Accesible en `http://192.168.4.1` (modo AP) o en la IP LAN del dispositivo (modo
 
 La lectura de batería proviene del comando `AT+CBC` del **SIM800L** (tensión de alimentación del módulo). El ESP32-S3 SuperMini no incluye circuito de batería propio; sin GSM activo el dashboard muestra *no disponible*.
 
-## Esquema de Conexiones
+## Esquema de Conexiones (ESP32-S3 SuperMini)
+
+Referencia completa en `Config.h`. Resumen del header:
+
+| Pin placa | GPIO | Uso |
+|-----------|------|-----|
+| TX | 43 | → SIM800 RX |
+| RX | 44 | ← SIM800 TX |
+| GP1 | 1 | LED rojo |
+| GP2 | 2 | LED verde |
+| GP3 | 3 | LED azul |
+| GP4 | 4 | Fase L1 |
+| GP5 | 5 | Fase L2 |
+| GP6 | 6 | Fase L3 |
+| GP7–GP13 | 7–13 | Libre |
+| Onboard LED | 48 | No usado por el firmware |
 
 ### Entradas de Fase (Aisladas)
 Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de red a través de un circuito de reducción (capacitivo/resistivo y puente de diodos) para obtener una señal digital segura de 3.3V al microcontrolador.
@@ -244,14 +274,17 @@ Se recomienda utilizar optoacopladores (ej. PC817) conectados a las líneas de r
 ### Módulo Celular (SIM800L)
 *   **VCC:** Fuente externa (3.7V - 4.2V, 2A). El ESP32 no provee corriente suficiente.
 *   **GND:** Común con ESP32 y fuente.
-*   **SIM800L TX:** GPIO 18 (RX en el ESP32). Nivel lógico 2.8V (el ESP32 de 3.3V lo lee bien).
-*   **SIM800L RX:** GPIO 19 (TX en el ESP32).
+*   **SIM800L TX** → **Pin RX** del ESP (GPIO 44). El ESP lee bien 2.8V del SIM800.
+*   **SIM800L RX** → **Pin TX** del ESP (GPIO 43). Usar divisor 3.3V→2.8V si hace falta.
+*   Son los pines **TX/RX impresos en el borde izquierdo** de la SuperMini (UART0).
+*   Con **USB CDC On Boot = Enabled**, el monitor USB no compite con esos pines.
+*   **No usar GPIO 18/19/20** — no están en el header o son USB interno.
     *   *Nota Divisor de Tensión:* El SIM800L tiene nivel lógico de 2.8V. La señal TX del ESP32 (3.3V) podría requerir un divisor resistivo simple (Ej: 10k en serie, 20k a GND) para no dañar el pin RX del SIM800L si la placa no trae adaptación de niveles.
 
-### LED de Estado (RGB o individuales)
-*   **LED Rojo (Alertas):** GPIO 15 — parpadea cuando hay falla de fase.
-*   **LED Verde (Conexión):** GPIO 16 — fijo cuando las fases están OK y MQTT está conectado.
-*   **LED Azul (Modo AP/Config):** GPIO 17 — fijo en modo configuración (Access Point).
+### LED de Estado (RGB o individuales, resistencia ~330Ω)
+*   **LED Rojo:** GP1 / GPIO 1 — parpadea cuando hay falla de fase.
+*   **LED Verde:** GP2 / GPIO 2 — fijo cuando las fases están OK y MQTT está conectado.
+*   **LED Azul:** GP3 / GPIO 3 — fijo en modo configuración (Access Point).
 *   **Amarillo (R+G):** parpadea cuando las fases están OK pero no hay conexión MQTT activa.
 
 ## Documentación de Tópicos MQTT

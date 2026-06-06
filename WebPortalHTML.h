@@ -49,6 +49,15 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .toast{position:fixed;right:16px;bottom:16px;padding:12px 14px;border-radius:8px;background:#1e293b;border:1px solid var(--border);box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(8px);transition:.2s;z-index:20}
 .toast.show{opacity:1;transform:translateY(0)}
 .banner{padding:10px 12px;border-radius:8px;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.35);margin-bottom:12px;font-size:.9rem}
+.danger-zone{margin-top:20px;padding:14px;border:1px solid rgba(239,68,68,.35);border-radius:var(--radius);background:rgba(239,68,68,.08)}
+.danger-zone h3{color:var(--err);font-size:.9rem;margin-bottom:6px}
+.danger-zone p{color:var(--muted);font-size:.85rem;margin-bottom:10px}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:16px;z-index:30}
+.modal-overlay.show{display:flex}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;max-width:400px;width:100%}
+.modal h3{margin-bottom:8px}
+.modal p{color:var(--muted);font-size:.9rem;margin-bottom:16px;line-height:1.4}
+.modal-actions{display:grid;gap:8px;grid-template-columns:1fr 1fr}
 </style>
 </head>
 <body>
@@ -79,6 +88,9 @@ button:disabled{opacity:.6;cursor:not-allowed}
       <p style="margin:8px 0"><span id="gsmDetBadge" class="badge">GSM modulo</span></p>
       <p style="margin:8px 0"><span id="gsmRegBadge" class="badge">GSM red</span></p>
       <p style="margin-top:10px;color:var(--muted);font-size:.85rem" id="battInfo">Bateria: —</p>
+      <p style="margin-top:8px;color:var(--muted);font-size:.85rem" id="mdnsInfo">mDNS: —</p>
+      <p style="margin-top:4px;color:var(--muted);font-size:.85rem" id="otaInfo">OTA: —</p>
+      <p style="margin-top:8px;font-size:.8rem;color:var(--muted);word-break:break-word" id="gsmDebug">GSM debug: —</p>
     </div>
     <div class="card">
       <h3>MQTT Topics</h3>
@@ -87,7 +99,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
   </div>
   <div class="actions" style="margin-top:12px">
     <button id="btnTest" class="secondary">Enviar notificacion de prueba</button>
-    <button id="btnReset" class="danger">Reset de fabrica</button>
+    <button id="btnGsmRetry" class="secondary">Reintentar conexion GSM</button>
   </div>
 </section>
 <section id="config" class="panel">
@@ -112,13 +124,41 @@ button:disabled{opacity:.6;cursor:not-allowed}
       <div><label>Telefono 2</label><input name="phone1" id="phone1"></div>
     </div>
     <label>Telefono 3</label><input name="phone2" id="phone2">
+    <h3 style="margin:16px 0 8px">Dispositivo</h3>
+    <div class="row">
+      <div>
+        <label>Nombre mDNS</label>
+        <input name="hostname" id="hostname" placeholder="phase" pattern="[a-zA-Z0-9-]+" title="Solo letras, numeros y guiones. Se publica como nombre.local">
+        <p style="color:var(--muted);font-size:.8rem;margin-top:4px">Por defecto: <b>phase.local</b></p>
+      </div>
+      <div>
+        <label>Password OTA</label>
+        <input name="otaPass" id="otaPass" type="password" placeholder="Dejar vacio para no cambiar">
+        <p style="color:var(--muted);font-size:.8rem;margin-top:4px">Por defecto: <b>Phase123</b></p>
+      </div>
+    </div>
     <button type="submit" id="btnSave">Guardar y reiniciar</button>
   </form>
+  <div id="resetZone" class="danger-zone" hidden>
+    <h3>Zona de peligro</h3>
+    <p>Borra toda la configuracion guardada y reinicia el dispositivo en modo Access Point (PhaseWatch_Config).</p>
+    <button type="button" id="btnReset" class="danger">Reset de fabrica</button>
+  </div>
 </section>
 <section id="logs" class="panel">
   <pre id="logsBox">Cargando logs...</pre>
   <button class="secondary" id="btnRefreshLogs">Actualizar logs</button>
 </section>
+</div>
+<div id="resetModal" class="modal-overlay">
+  <div class="modal">
+    <h3>Confirmar reset de fabrica</h3>
+    <p>Se borraran Wi-Fi, MQTT, telefonos y toda la configuracion. El dispositivo volvera al hotspot <b>PhaseWatch_Config</b>.</p>
+    <div class="modal-actions">
+      <button type="button" class="secondary" id="btnResetCancel">Cancelar</button>
+      <button type="button" class="danger" id="btnResetConfirm">Si, resetear</button>
+    </div>
+  </div>
 </div>
 <div id="toast" class="toast"></div>
 <script>
@@ -160,7 +200,7 @@ function renderTopics(t){
 }
 
 function applyStatus(d){
-  const key=JSON.stringify({l1:d.l1,l2:d.l2,l3:d.l3,crit:d.criticality,mqtt:d.mqtt_connected,gsm:d.gsm_detected,gsmR:d.gsm_registered,net:d.network,rssi:d.rssi,batt:d.battery_mv});
+  const key=JSON.stringify({l1:d.l1,l2:d.l2,l3:d.l3,crit:d.criticality,mqtt:d.mqtt_connected,gsm:d.gsm_detected,gsmR:d.gsm_registered,net:d.network,rssi:d.rssi,batt:d.battery_mv,mdns:d.mdns_active,ota:d.ota_active,dbg:d.gsm_debug});
   if(key===statusKey) return;
   statusKey=key;
   $('#deviceId').textContent='ID '+d.device_id;
@@ -173,10 +213,13 @@ function applyStatus(d){
   setBadge($('#gsmDetBadge'),d.gsm_detected,d.gsm_detected?'GSM detectado':'GSM no detectado');
   setBadge($('#gsmRegBadge'),d.gsm_registered,d.gsm_registered?'GSM en red':'GSM sin red');
   $('#battInfo').textContent=d.battery_available?`Bateria (SIM800): ${(d.battery_mv/1000).toFixed(2)} V (${d.battery_pct}%) — tension de alimentacion del modulo`:'Bateria: no disponible (requiere modulo GSM)';
+  $('#mdnsInfo').textContent=d.mdns_active?`mDNS activo: http://${d.mdns_fqdn}`:`mDNS: inactivo (${d.mdns_fqdn} al conectar Wi-Fi)`;
+  $('#otaInfo').textContent=d.ota_active?`OTA activo en ${d.mdns_fqdn}`:'OTA: inactivo (requiere Wi-Fi)';
+  $('#gsmDebug').textContent='GSM debug: '+(d.gsm_debug||'—');
   renderTopics(d.mqtt_topics);
   setBadge($('#modeBadge'),!d.config_mode,d.config_mode?'Modo AP':'Operativo');
   $('#setupBanner').hidden=!d.config_mode;
-  $('#btnReset').disabled=d.config_mode;
+  $('#resetZone').hidden=d.config_mode;
 }
 
 async function pollStatus(){
@@ -199,6 +242,9 @@ async function loadConfig(){
     $('#phone0').value=c.phones?.[0]||'';
     $('#phone1').value=c.phones?.[1]||'';
     $('#phone2').value=c.phones?.[2]||'';
+    $('#hostname').value=c.hostname||'phase';
+    $('#otaPass').value='';
+    $('#otaPass').placeholder=c.configured?'Dejar vacio para no cambiar':'Phase123';
   }catch(e){}
 }
 
@@ -233,11 +279,34 @@ $('#btnTest').onclick=async()=>{
   $('#btnTest').disabled=false;
 };
 
-$('#btnReset').onclick=async()=>{
-  if(!confirm('Borrar configuracion y volver al modo AP?')) return;
-  await fetch('/api/reset',{method:'POST'});
-  toast('Reseteando...');
-  setTimeout(()=>location.reload(),2000);
+$('#btnGsmRetry').onclick=async()=>{
+  $('#btnGsmRetry').disabled=true;
+  toast('Reintentando GSM...');
+  try{
+    const r=await fetch('/api/gsm/retry',{method:'POST'});
+    const j=await r.json();
+    toast(j.message||'GSM actualizado');
+    if(j.debug) $('#gsmDebug').textContent='GSM debug: '+j.debug;
+    statusKey='';
+    pollStatus();
+    if($('#logs').classList.contains('active')) refreshLogs();
+  }catch(e){toast('Error al reintentar GSM')}
+  $('#btnGsmRetry').disabled=false;
+};
+
+const resetModal=$('#resetModal');
+$('#btnReset').onclick=()=>resetModal.classList.add('show');
+$('#btnResetCancel').onclick=()=>resetModal.classList.remove('show');
+resetModal.onclick=e=>{if(e.target===resetModal) resetModal.classList.remove('show')};
+$('#btnResetConfirm').onclick=async()=>{
+  resetModal.classList.remove('show');
+  $('#btnResetConfirm').disabled=true;
+  try{
+    await fetch('/api/reset',{method:'POST'});
+    toast('Reseteando dispositivo...');
+    setTimeout(()=>location.reload(),2000);
+  }catch(e){toast('Error al resetear')}
+  $('#btnResetConfirm').disabled=false;
 };
 
 $('#btnRefreshLogs').onclick=refreshLogs;

@@ -13,6 +13,10 @@ struct SystemConfig {
     char mqttPass[MAX_MQTT_PASS_LEN];
     
     char phones[MAX_PHONE_NUMBERS][MAX_PHONE_LEN];
+
+    char hostname[MAX_HOSTNAME_LEN];
+    char otaPass[MAX_OTA_PASS_LEN];
+
     bool configured;
 };
 
